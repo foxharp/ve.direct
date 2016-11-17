@@ -1,0 +1,664 @@
+#!/bin/bash
+
+# source profiler.bash
+
+# This script should be able to display and log data from any Victron
+# product described in the VE.Direct Protocol pdf version 3.22, dated
+# 28 Sept, 2016.  I only own a BMV-702, so output from other products
+# hasn't been tested.
+#
+# paul fox, pgf@foxharp.boston.ma.us, autumn 2016
+
+me=${0##*/}
+
+usage()
+{
+    exec >&2
+    cat <<-EOF
+usage: $me [options]
+    options:
+     --panel             Enable real-time display "panel"
+     --plot	         Enable creation of plot-ready CSV output file
+                            (default if reading VE.Direct device directly)
+     --noplot	         Suppress the plot-ready CSV output file
+                            (default if reading data from a remote script)
+     --fahrenheit|-F     Display temperature in Fahrenheit (default)
+     --celsius|-C	 Display temperature in Celsius
+     --backup	         Copy input data to file, for reuse by "--test"
+     --device=<device>   Attach to "device" for input from VE.Direct interface
+     --remote=<host>     Get data from a copy of this script running on "host"
+     --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
+     --raw	         Format and show data directly as it arrives
+			    (mostly for debug)
+EOF
+    exit 1
+}
+
+get_options()
+{
+    # configuration options:
+    do_panel=;	     # show real-time panel display of most useful data
+    do_plot=1;	     # create csv file suitable for creating graphs
+    force_plot=;     # force, even if remote
+    do_degF=1;	     # convert temperature to fahrenheit
+    do_raw=;	     # display all data in "pretty" format, as it arrives
+    ve_device=;      # connect to VE.Direct device, and create /tmp/victron-pipe
+    do_local=;	     # get data from fifo /tmp/victron-pipe  (default)
+    do_data_backup=; # create reusable (with "--test") copy of all input data
+    do_remotehost=;  # use ssh to read from /tmp/victron-pipe on another host
+    do_testfile=;    # read data from given file instead of VE.Direct device
+if : false
+then
+    while [[ $# > 0 ]]
+    do
+	arg="$1"
+	case $arg in
+	--noplot)	do_plot=; ;;
+	--plot)		force_plot=1; ;;
+	--panel)	do_panel=1 ;;
+	--fah*|-F)	do_degF=1 ;;
+	--cel*|-C)	do_degF=; ;;
+	--raw)		do_raw=1 ;;
+	--backup)	do_data_backup=1 ;;
+	--remote=*)
+	    do_remotehost=${arg#--remote=}
+	    if [[ ! $do_remotehost ]]
+	    then
+		echo "No hostname given with --remote" >&2
+		usage
+	    fi
+	    ;;
+	--test=*)
+	    do_testfile=${arg#--test=}
+	    if [[ ! $do_testfile || ! -r $do_testfile ]]
+	    then
+		echo "$me: --test: '$do_testfile' is unreadable" >&2
+		usage
+	    fi
+	    ;;
+	--device=*)
+	    ve_device=${arg#--device=}
+	    if [[ ! $ve_device || ! -r $ve_device ]]
+	    then
+		echo "$me: --device: '$ve_device' is unreadable" >&2
+		usage
+	    fi
+	    ;;
+	*) usage ;;
+	esac
+	shift
+    done
+
+    inputs=0
+    [[ $do_testfile ]] && ((inputs++))
+    [[ $do_remotehost ]] && ((inputs++))
+    [[ $ve_device ]] && ((inputs++))
+
+    if (( $inputs > 1 ))
+    then
+	exec >&2
+	echo "$me: Error: Specify just one of --remote=, --test=, or --device="
+	exit 1
+    fi
+
+    if (( $inputs == 0 ))
+    then
+	# if no other input sources are given, we default to reading
+	# directly from /tmp/victron-pipe, assuming another copy of
+	# this script is writing to it.
+	do_local=true
+    fi
+else
+do_remotehost=crawler
+do_panel=true
+fi
+}
+
+misc_init()
+{
+    set -u  # catch undefined variables
+    longest_desc=10
+    desc_wid=10  # initial display width for label strings.  will adapt.
+    prev_now_hour=99
+    ve_device=;
+    write_to_pipe=true
+    seen_PID=;
+}
+
+# most of the fields are of a few simple types, differentiated by
+# their display units.  also, the field names coming from the
+# VE.Direct interface are very cryptic, e.g. "VS", "CE", "H2", etc.
+# so we use two tables (units[] and descr[]) to associate a type and
+# a full description with every field.  (descriptions that are commented
+# out are the original descriptions from the Victron documentation)
+# there are two "pseudo fields" in the list below, which aren't actually
+# part of the Victron protocol:
+#  Pcalc -- this is instantaneous power, in hundredths of a Watt, as
+#           calculated from V * I.  (the P field sent from the BMV is
+#           in whole Watts, so no fractions are available.)
+#  ARstring -- this is a "string" version of AR.  the AR field gives a
+#           numeric interpretation of the Alarm Reason.  ARstring
+#           further interprets that into text, e.g. the number '5'
+#           becomes "lowV,low%".
+
+init_descriptions()
+{
+    units[V]="mV";            descr[V]="Voltage" # descr[V]="Main (battery) voltage"
+    units[VS]="mV";           descr[VS]="Auxiliary (starter) voltage"
+    units[VM]="mV";           descr[VM]="Mid-point voltage of the battery bank"
+    units[DM]=".1%";          descr[DM]="Mid-point deviation of the battery bank"
+    units[VPV]="mV";          descr[VPV]="Panel voltage"
+    units[PPV]="Watts";       descr[PPV]="Panel power"
+    units[I]="mA";            descr[I]="Current" # descr[I]="Battery current"
+    units[IL]="mA";           descr[IL]="Load current"
+    units[LOAD]="none";       descr[LOAD]="Load output state (ON/OFF)"
+    units[T]="degC";          descr[T]="Battery temp." #  descr[T]="Battery temperature"
+    units[P]="Watts";         descr[P]="Instantaneous power"
+    units[Pcalc]=".01Watts";  descr[Pcalc]="Power" # calculated from V and I
+    units[CE]="mAh";          descr[CE]="Charge consumed" # descr[CE]="Consumed Amp Hours"
+    units[SOC]=".1%";         descr[SOC]="Capacity left" # descr[SOC]="State-of-charge"
+    units[TTG]="minutes";     descr[TTG]="Time left" # descr[TTG]="Time-to-go"
+    units[Alarm]="none";      descr[Alarm]="Alarm condition active"
+    units[Relay]="none";      descr[Relay]="Relay state"
+    units[AR]="alarm";        descr[AR]="Alarm reason"
+    units[ARstring]="alarm";  descr[ARstring]="Alarm reason" # calculated
+    units[H1]="mAh";          descr[H1]="Depth of the deepest discharge"
+    units[H2]="mAh";          descr[H2]="Depth of the last discharge"
+    units[H3]="mAh";          descr[H3]="Depth of the average discharge"
+    units[H4]="none";         descr[H4]="Number of charge cycles"
+    units[H5]="none";         descr[H5]="Number of full discharges"
+    units[H6]="mAh";          descr[H6]="Cumulative Amp Hours drawn"
+    units[H7]="mV";           descr[H7]="Minimum main (battery) voltage"
+    units[H8]="mV";           descr[H8]="Maximum main (battery) voltage"
+    units[H9]="seconds";      descr[H9]="Time since full" # descr[H9]="Number of seconds since last full charge"
+    units[H10]="none";        descr[H10]="Number of automatic synchronizations"
+    units[H11]="none";        descr[H11]="Number of low main voltage alarms"
+    units[H12]="none";        descr[H12]="Number of high main voltage alarms"
+    units[H13]="none";        descr[H13]="Number of low aux. voltage alarms"
+    units[H14]="none";        descr[H14]="Number of high aux. voltage alarms"
+    units[H15]="mV";          descr[H15]="Minimum auxiliary (battery) voltage"
+    units[H16]="mV";          descr[H16]="Maximum auxiliary (battery) voltage"
+    units[H17]=".01kWh";      descr[H17]="Amount of discharged energy"
+    units[H18]=".01kWh";      descr[H18]="Amount of charged energy"
+    units[H19]=".01kWh";      descr[H19]="Yield total (user resettable counter)"
+    units[H20]=".01kWh";      descr[H20]="Yield today"
+    units[H21]="Watts";       descr[H21]="Maximum power today"
+    units[H22]=".01kWh";      descr[H22]="Yield yesterday"
+    units[H23]="Watts";       descr[H23]="Maximum power yesterday"
+    units[ERR]="none";        descr[ERR]="Error code"
+    units[CS]="none";         descr[CS]="State of operation"
+    units[BMV]="ignore";      descr[BMV]="Model description (deprecated)"
+    units[FW]="none";         descr[FW]="Firmware version"
+    units[PID]="product";     descr[PID]="Product ID"
+    units["SER#"]="none";     descr["SER#"]="Serial number"
+    units[HSDS]="none";       descr[HSDS]="Day sequence number (0..364)"
+    units[MODE]="none";       descr[MODE]="Device mode"
+    units[AC_OUT_V]=".01V";   descr[AC_OUT_V]="AC output voltage"
+    units[AC_OUT_I]=".1A";    descr[AC_OUT_I]="AC output current"
+    units[WARN]="none";       descr[WARN]="Warning reason"
+    units[Checksum]="ignore"; descr[Checksum]="Checksum"  # ignored
+
+    # Alarm reason (AR) bits:
+    alarm[0]="lowV";     # Low Voltage            # both
+    alarm[1]="highV";    # High Voltage           # both
+    alarm[2]="low%";     # Low SOC                # BMV only
+    alarm[3]="lowAuxV";  # Low Starter Voltage    # BMV only
+    alarm[4]="highAuxV"; # High Starter Voltage   # BMV only
+    alarm[5]="lowT";     # Low Temperature        # both
+    alarm[6]="lowT";     # High Temperature       # both
+    alarm[7]="midV";     # Mid Voltage            # BMV only
+    alarm[8]="ovrload";  # Overload               # inverter only
+    alarm[9]="DCripple"; # DC-ripple              # inverter only
+    alarm[10]="lowACV";  # Low V AC out           # inverter only
+    alarm[11]="highACV"; # High V AC out          # inverter only
+
+}
+
+init_device_connections()
+{
+    # arrange for a known file descriptor to be our input stream
+    if [[ $do_testfile ]]
+    then
+	: input from $do_testfile
+	exec 3< $do_testfile
+	input_fd=3
+    elif [[ $ve_device ]]
+    then
+	: input from $ve_device
+	exec 3<$ve_device
+	input_fd=3
+	# set correct baud, and let all characters through except
+	# carriage return (CR) characters
+	stty -F $ve_device raw igncr 19200
+    elif [[ $do_remotehost ]]
+    then
+	: input from remote /tmp/victron-pipe on host $do_remotehost
+	coproc ssh $do_remotehost sh -c "cat <>/tmp/victron-pipe"
+	input_fd=${COPROC[0]}
+	# while we *could* write to the pipe, it causes big problems
+	# if you type "--remote=localhost" since we'll be reading and
+	# writing the same fifo.
+	write_to_pipe=;
+	test "$force_plot" || do_plot=; # don't write plotfile unless forced
+    else
+	: input from local /tmp/victron-pipe
+	exec 3<> /tmp/victron-pipe
+	input_fd=3
+	# if we're reading the pipe, definitely don't write to it as well
+	write_to_pipe=;
+	test "$force_plot" || do_plot=; # don't write plotfile unless forced
+    fi
+
+    # create the output named pipe, unless it already exists (someone
+    # else might be reading it -- don't want to recreate needlessly)
+    if [[ $write_to_pipe && ! -p /tmp/victron-pipe ]]
+    then
+	rm -f /tmp/victron-pipe
+	mkfifo --mode=644 /tmp/victron-pipe
+    fi
+    # open the fifo for r/w, so later writes won't block even if no
+    # one else is reading
+    exec 4<>/tmp/victron-pipe
+}
+
+clear_screen()
+{
+    printf "\e[H\e[2J"
+}
+
+emit_panel_display()
+{
+    local f len power
+
+    test "$do_raw" && return  # already displayed, while accumulating data
+
+    clear_screen
+
+    # here we choose the specific values to put in the "panel" display
+    for f in V I Pcalc CE SOC TTG H9 T ARstring
+    do
+	# use a shell trick to decide if display[$f] has a value
+	if [[ ${display[$f]+isset} ]]
+	then
+	    printf "%s\n" "${display[$f]}" 
+
+	    # keep track of the longest description field, to size
+	    # the width of the output in the future
+	    len=${#descr[$f]} 
+	    if (( $len > $longest_desc ))
+	    then
+		longest_desc=$len
+	    fi
+	fi
+    done
+    desc_wid=$(( $longest_desc + 2 ))
+}
+
+emit_plot_data()
+{
+    local f
+    test "$do_plot" || return  # plot output not wanted
+
+    if [[ $prev_now_hour != $now_hour ]]
+    then
+	printf -v hourly_comment \
+	    "# date/time, mV, mA, W, %%charge (x10), time-left (sec), degrees C, alarm-reason"
+	prev_now_hour=$now_hour
+    else
+	hourly_comment=;
+    fi
+    (
+	test "$hourly_comment" && printf "%s\n" "$hourly_comment"
+	printf "$now_date-$now_time"
+	# choose the values we might want to plot
+	for f in V I Pcalc SOC TTG T AR
+	do
+	    if [[ ${plot_data[$f]+isset} ]]
+	    then
+		printf ", %s" "${plot_data[$f]}"
+	    else
+		printf ", %s" "nodata"
+	    fi
+	done
+	printf "\n"
+    ) >>bmv_plot-$now_date.csv
+}
+
+modulo_split()
+{
+    # the shell doesn't do decimal arithmetic.  so to
+    # print 12036 mV as 12.036V, we do some arithmetic
+    # to split the integer and fractional parts.
+    #
+    # (also used to split seconds and minutes into minutes and hours)
+    #
+    # leaves results in $Div and $Mod
+    #
+    local val modulo mod
+    val=$1
+    modulo=$2
+
+    mod=$((val % modulo))
+    mod=${mod#-}  # remove sign from decimal part
+
+    # in the above example, we want to be sure we get "036"
+    # for the decimal part, and not just "36".
+    case $modulo in
+    100|60) decwid=02;;
+    1000) decwid=03;;
+    *) decwid=;;
+    esac
+
+    # convert it using %02d, %03d, or %d
+    printf -v Mod "%${decwid}d" $mod
+    Div=$((val / modulo))
+}
+
+fraction()
+{
+    # split a number n into integer and fractional parts, where
+    # the fractional part is $f digits long
+    local f n
+    f=$1
+    n=000000000$2   # pad with leading zeros
+    frac=${n: -$f}  # take the last $f chars of $n
+    int=${n/%$frac/} # replace $frac at the end of $n with nothing
+    int=$((10#$int)) # remove leading zeros, by forcing to base 10
+
+    echo $int.$frac
+}
+
+
+format_display_line()
+{
+    local fld val units modulo
+    fld="$1"
+    val="$2"
+    units="$3"
+    modulo="$4"
+
+    desc="${descr[$fld]}"
+
+    if [[ $val ]]
+    then
+	# special case:  convert to degrees F for display, if requested
+	if [[ $fld = "T" && $do_degF ]]
+	then
+	    val=$(((9 * val / 5) + 32))
+	    units="degF"
+	fi
+
+	if [[ $modulo = none ]]
+	then
+	    printf "%-${desc_wid}s %s %s" "$desc" "$val" "$units"
+	else
+	    modulo_split "$val" "$modulo"
+	    printf "%-${desc_wid}s %s.%s %s" "$desc" $Div $Mod "$units"
+	fi
+    fi
+}
+
+save_output()
+{
+    local field value
+    field="$1"
+    value="$2"
+
+    # save voltage and current, for calculating power later
+    # (we calculate our own value rather than using "P" so that we can
+    # display fractions of a watt)
+    case $field in
+    V) savedV="$value" ;;
+    I) savedI="$value" ;;
+    esac
+
+    # save the display info for later
+    [[ "$do_panel" ]] && display[$field]=$(format_display_line "$@")
+    [[ "$do_plot" ]]  && plot_data["$field"]="$value"
+    [[ "$do_raw" ]]   && printf "%s\n" "$(format_display_line "$@")"
+}
+
+flush()
+{
+    local keep_reading
+    local field everything_else
+
+    # there's a pause in the BMV output just before the checksum byte. 
+    # as a result we very often read that byte (and newline) in the
+    # very first read.  so we skip the first line, as well as empty
+    # lines and Checksum lines.
+    keep_reading=true
+    while [[ $keep_reading ]]
+    do
+	if ! read -r field everything_else
+	then
+	    echo read failed while pre-reading lines
+	    exit 1
+	fi
+	case "$field" in
+	""|"Checksum") keep_reading=true ;;
+	*) keep_reading=; ;;
+	esac
+
+    done <&$input_fd  # read input stream
+}
+
+loop()
+{
+    local was_checksum reason comma unit
+    # assume we might have just missed reading the Checksum field
+    was_checksum=1
+
+    while :
+    do
+	# read the fieldname and the value, and any extra text into
+	# $tail.  use -r to suppress the special meaning of a '\'
+	# character, because otherwise, if the checksum byte is '\', it will
+	# escape the newline, and read will pull in two lines instead
+	# of just one.
+	if ! read -r field value tail
+	then
+	    echo read failed while reading lines
+	    exit 1
+	fi
+
+	# the binary checksum character is a pain, since it might
+	# equal a tab or a space, or be null (which the shell doesn't
+	# handle at all).  so when we see we're reading a Checksum
+	# line, we ignore errors.  the checksum byte might also be a
+	# newline, in which case we'll get an extra blank line.  so we
+	# ignore blank lines if they immediately follow a checksum.
+	if [[ $field = Checksum ]]
+	then
+	    was_checksum=1
+	    continue
+	fi
+
+	: check if was_checksum
+	if [[ $was_checksum ]]
+	then
+	    if [[ ! $field ]]
+	    then
+		# skip a blank line that follows a Checksum line
+		was_checksum=;
+		continue
+	    fi
+	fi
+	was_checksum=;
+
+	# check for an empty field or value, and also for extra trailing
+	# text on the line.
+	if [[ ! $value || ! $field || $tail ]]
+	then
+	    exec >&2
+	    echo -n "Something is wrong: "
+	    test "$tail" && echo "too much data on a line"
+	    test "$value" || echo "not enough data on a line"
+	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail"
+	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail" | hexdump -C
+	    exit 1
+	fi
+
+	# date and time used for logging and plotting
+	printf -v now_date "%(%F)T" -1
+	printf -v now_time "%(%T)T" -1
+	printf -v now_hour "%(%H)T" -1
+
+	# put a copy of the received data into a named pipe for
+	# another copy of this script to use, but only if *we're* not
+	# reading that pipe.
+	if [[ $write_to_pipe ]]
+	then
+	    printf "%s	%s\n" "$field" "$value" >/tmp/victron-pipe
+	fi
+
+	# optionally save this raw data to a file as well.
+	if [[ $do_data_backup ]]
+	then
+	    printf "%s-%s	%s	%s\n" \
+		"$now_date" "$now_time" "$field" "$value" >> bmv-$now_date.log
+	fi
+
+	unit=${units[$field]-unknown}
+	case $unit in
+	"mV")	    save_output $field $value Volts 1000 ;;
+	".01V")	    save_output $field $value Volts 100 ;;
+	"mA")	    save_output $field $value Amps  1000 ;;
+	".1A")	    save_output $field $value Amps  10 ;;
+	"mAh")	    save_output $field $value Ah    1000 ;;
+	".01kWh")   save_output $field $value kWh   100 ;;
+	".1%")	    save_output $field $value %     10 ;;
+	"Watts")    save_output $field $value Watts none ;;
+	".01Watts") save_output $field $value Watts 100 ;;
+	"none")	    save_output $field $value ""    none ;;
+	"degC")     save_output $field $value degC  none ;;
+	"ignore")                                        ;;
+
+	"minutes"|"seconds")
+	    test "$do_plot" && plot_data["$field"]="$value"
+	    if (( $value < 0 ))
+	    then
+		printf -v display[$field] "%-${desc_wid}s infinite" \
+		    "${descr[$field]}"
+	    else
+
+		# split seconds into minutes and seconds
+		if [[ $unit = "seconds" ]]
+		then
+		    modulo_split $value 60
+		    min=$Div
+		    sec=$Mod
+		else
+		    min=$value
+		fi
+		# split minutes into hours and minutes
+		modulo_split $min 60
+		hour=$Div
+		min=$Mod
+
+		# split hours into days and hours
+		modulo_split $hour 24
+		day=$Div
+		hour=$Mod
+
+		# suppress days if zero
+		if [[ $day > 0 ]]
+		then
+		    day="${day}d "
+		else
+		    day=""
+		fi
+
+		# format with seconds or not, depending on what we started with
+		if [[ $unit = "seconds" ]]
+		then
+		    printf -v display[$field] "%-${desc_wid}s %s%sh %sm %ss" \
+			"${descr[$field]}" "$day" "$hour" "$min" "$sec"
+		else
+		    printf -v display[$field] "%-${desc_wid}s %s%sh %sm" \
+			"${descr[$field]}" "$day" "$hour" "$min"
+		fi
+	    fi
+	    test "$do_raw" && printf "%s\n" "${display[$field]}"
+	    ;;
+
+	"alarm")
+	    # convert AR numeric bits to comma-separated strings
+	    reason=;
+	    comma=;
+	    if (( $value != 0 ))
+	    then
+		for bit in {0..11}
+		do
+		    if (( $value & (1 << $bit) ))
+		    then
+			reason="$reason$comma${alarm[$bit]}"
+			comma=","
+		    fi
+		done
+		save_output ARstring "$reason" "" none
+	    fi
+	    save_output AR "$value" "" none
+	    ;;
+
+	"product")
+	    case $value in
+            0x20[345])              value=BMV-70X ;;
+            0x300|0xA0[45][0-9A-F]) value="BlueSolar MPPT" ;;
+            0xA2[012][124])         value="Phoenix Inverter" ;;
+	    esac
+
+	    save_output $field "$value" "" none
+
+	    # we use the appearance of the PID field to both capture
+	    # the product ID and also to flush any accumulated output
+	    if [[ $seen_PID && ( $do_panel || $do_plot ) ]]
+	    then
+		if [[ $savedV && $savedI ]]
+		then
+		    # current power in 100ths of a watt
+		    power=$((savedV * savedI / 10000))
+		    save_output Pcalc $power Watts 100
+		fi
+
+		# we're seeing PID for at least the second time
+		if [[ $do_panel ]]
+		then
+		    emit_panel_display
+		    display=;
+		fi
+
+		if [[ $do_plot ]]
+		then
+		    emit_plot_data
+		    plot_data=;
+		fi
+	    fi
+	    seen_PID=true
+
+	    test "$do_testfile" && sleep 0.2
+	    ;;
+	"unknown")
+	    echo "Warning: unknown field name '$field', value '$value'"
+	    ;;
+	esac
+
+    done <&$input_fd  # read input stream
+}
+
+# declare associative arrays at global scope
+declare -A units descr alarm display plot_data
+
+misc_init
+get_options "$@"
+
+init_descriptions
+init_device_connections
+
+flush
+loop
+
+exit
+
+
+
