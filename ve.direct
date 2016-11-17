@@ -10,7 +10,14 @@
 # the data in CSV format for plotting or further analysis.  In addition,
 # further invocations of the script can connect across a network to
 # the first invocation as a source of data, and so can function as
-# remote displays. 
+# remote displays.  So an example deployment might run one invocation
+# as a system daemon, connected to the device itself, while other
+# invocations might drive a local display or might just be used to
+# quickly check the battery state remotely.
+#
+# Network security is assured by using only unix domain sockets for
+# communication.  Remote access is implemented using ssh to access
+# the unix domain socket remotely.
 #
 # Only the read-only continuous output data implemented by VE.Direct
 # devices is supported.  The interactive hexadecimal protocol is
