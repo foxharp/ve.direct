@@ -1,11 +1,16 @@
 #!/bin/bash
 
-# source profiler.bash
-
 # This script should be able to display and log data from any Victron
 # product described in the VE.Direct Protocol pdf version 3.22, dated
 # 28 Sept, 2016.  I only own a BMV-702, so output from other products
 # hasn't been tested.
+#
+# The script can read a VE.Direct device and can display the data
+# in real-time on a simulated "panel" display, as well as logging
+# the data in CSV format for plotting or further analysis.  In addition,
+# further invocations of the script can connect across a network to
+# the first invocation as a source of data, and so can function as
+# remote displays. 
 #
 # paul fox, pgf@foxharp.boston.ma.us, autumn 2016
 
@@ -37,18 +42,15 @@ EOF
 get_options()
 {
     # configuration options:
-    do_panel=;	     # show real-time panel display of most useful data
     do_plot=1;	     # create csv file suitable for creating graphs
     force_plot=;     # force, even if remote
+    do_panel=;	     # show real-time panel display of most useful data
     do_degF=1;	     # convert temperature to fahrenheit
     do_raw=;	     # display all data in "pretty" format, as it arrives
-    ve_device=;      # connect to VE.Direct device, and create /tmp/victron-pipe
-    do_local=;	     # get data from fifo /tmp/victron-pipe  (default)
     do_data_backup=; # create reusable (with "--test") copy of all input data
-    do_remotehost=;  # use ssh to read from /tmp/victron-pipe on another host
+    do_remotehost=;  # ssh to remote host, connect to socket there
     do_testfile=;    # read data from given file instead of VE.Direct device
-if : false
-then
+    ve_device=;      # connect to VE.Direct device
     while [[ $# > 0 ]]
     do
 	arg="$1"
@@ -100,18 +102,6 @@ then
 	echo "$me: Error: Specify just one of --remote=, --test=, or --device="
 	exit 1
     fi
-
-    if (( $inputs == 0 ))
-    then
-	# if no other input sources are given, we default to reading
-	# directly from /tmp/victron-pipe, assuming another copy of
-	# this script is writing to it.
-	do_local=true
-    fi
-else
-do_remotehost=crawler
-do_panel=true
-fi
 }
 
 misc_init()
@@ -121,8 +111,9 @@ misc_init()
     desc_wid=10  # initial display width for label strings.  will adapt.
     prev_now_hour=99
     ve_device=;
-    write_to_pipe=true
     seen_PID=;
+    socket_out=;
+    trapkill=;
 }
 
 # most of the fields are of a few simple types, differentiated by
@@ -214,6 +205,12 @@ init_descriptions()
 
 }
 
+# the script instance that talks to the VE.Direct device creates
+# a listening socket...
+ncat_writer="ncat --keep-open --listen --unixsock /tmp/victron-socket"
+# ... in order to share the data with other instances:
+ncat_reader="ncat --idle-timeout 4 --unixsock /tmp/victron-socket"
+
 init_device_connections()
 {
     # arrange for a known file descriptor to be our input stream
@@ -222,43 +219,44 @@ init_device_connections()
 	: input from $do_testfile
 	exec 3< $do_testfile
 	input_fd=3
+	am_socket_writer=true;
     elif [[ $ve_device ]]
     then
 	: input from $ve_device
 	exec 3<$ve_device
 	input_fd=3
+	am_socket_writer=true;
 	# set correct baud, and let all characters through except
 	# carriage return (CR) characters
 	stty -F $ve_device raw igncr 19200
     elif [[ $do_remotehost ]]
     then
-	: input from remote /tmp/victron-pipe on host $do_remotehost
-	coproc ssh $do_remotehost sh -c "cat <>/tmp/victron-pipe"
-	input_fd=${COPROC[0]}
-	# while we *could* write to the pipe, it causes big problems
-	# if you type "--remote=localhost" since we'll be reading and
-	# writing the same fifo.
-	write_to_pipe=;
+	: input from host $do_remotehost
+	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_reader'" ; }
+	trap_kill+="$ssh_input_PID "
+	input_fd=${ssh_input[0]}
+	# while we *could* create another socket locally, it causes
+	# big problems if you type "--remote=localhost", since we'll
+	# be reading and writing the same socket.  hilarity ensues.
+	am_socket_writer=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     else
-	: input from local /tmp/victron-pipe
-	exec 3<> /tmp/victron-pipe
-	input_fd=3
-	# if we're reading the pipe, definitely don't write to it as well
-	write_to_pipe=;
+	echo : input from local socket
+	coproc local_input { $ncat_reader ; }
+	trap_kill+="$local_input_PID "
+	input_fd=${local_input[0]}
+	am_socket_writer=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     fi
 
-    # create the output named pipe, unless it already exists (someone
-    # else might be reading it -- don't want to recreate needlessly)
-    if [[ $write_to_pipe && ! -p /tmp/victron-pipe ]]
+    # create the output socket
+    if [[ $am_socket_writer ]]
     then
-	rm -f /tmp/victron-pipe
-	mkfifo --mode=644 /tmp/victron-pipe
+	rm -f /tmp/victron-socket
+	coproc output { $ncat_writer ; }
+	trap_kill+="$output_PID "
+	socket_out=${output[1]}
     fi
-    # open the fifo for r/w, so later writes won't block even if no
-    # one else is reading
-    exec 4<>/tmp/victron-pipe
 }
 
 clear_screen()
@@ -289,6 +287,8 @@ emit_panel_display()
 	    then
 		longest_desc=$len
 	    fi
+	    # we used this display.  get rid of it
+	    unset display[$f]
 	fi
     done
     desc_wid=$(( $longest_desc + 2 ))
@@ -316,6 +316,7 @@ emit_plot_data()
 	    if [[ ${plot_data[$f]+isset} ]]
 	    then
 		printf ", %s" "${plot_data[$f]}"
+		unset plot_data[$f]
 	    else
 		printf ", %s" "nodata"
 	    fi
@@ -435,6 +436,7 @@ flush()
 	    echo read failed while pre-reading lines
 	    exit 1
 	fi
+
 	case "$field" in
 	""|"Checksum") keep_reading=true ;;
 	*) keep_reading=; ;;
@@ -474,12 +476,11 @@ loop()
 	    continue
 	fi
 
-	: check if was_checksum
+	# try to skip blank lines that follow a Checksum line
 	if [[ $was_checksum ]]
 	then
 	    if [[ ! $field ]]
 	    then
-		# skip a blank line that follows a Checksum line
 		was_checksum=;
 		continue
 	    fi
@@ -504,12 +505,12 @@ loop()
 	printf -v now_time "%(%T)T" -1
 	printf -v now_hour "%(%H)T" -1
 
-	# put a copy of the received data into a named pipe for
-	# another copy of this script to use, but only if *we're* not
-	# reading that pipe.
-	if [[ $write_to_pipe ]]
+	# make a copy of the received data available on a socket that
+	# another copy of this script can connect to and use.
+	if [[ $am_socket_writer ]]
 	then
-	    printf "%s	%s\n" "$field" "$value" >/tmp/victron-pipe
+	    : socket_out is $socket_out
+	    printf "%s	%s\n" "$field" "$value" >&$socket_out
 	fi
 
 	# optionally save this raw data to a file as well.
@@ -625,18 +626,16 @@ loop()
 		if [[ $do_panel ]]
 		then
 		    emit_panel_display
-		    display=;
 		fi
 
 		if [[ $do_plot ]]
 		then
 		    emit_plot_data
-		    plot_data=;
 		fi
 	    fi
 	    seen_PID=true
 
-	    test "$do_testfile" && sleep 0.2
+	    test "$do_testfile" && sleep .2
 	    ;;
 	"unknown")
 	    echo "Warning: unknown field name '$field', value '$value'"
@@ -649,6 +648,20 @@ loop()
 # declare associative arrays at global scope
 declare -A units descr alarm display plot_data
 
+exit_trapfunc()
+{
+    if [[ $socket_out ]]
+    then
+	: socket_out is $socket_out
+	rm -f /tmp/victron-socket
+    fi
+    if [[ $trap_kill ]]
+    then
+	kill $trap_kill
+    fi
+}
+
+trap "exit_trapfunc" 0
 misc_init
 get_options "$@"
 
