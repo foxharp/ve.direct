@@ -12,7 +12,12 @@
 # the first invocation as a source of data, and so can function as
 # remote displays. 
 #
+# Only the read-only continuous output data implemented by VE.Direct
+# devices is supported.  The interactive hexadecimal protocol is
+# out of scope for this script (and probably for this language! ;-).
+#
 # paul fox, pgf@foxharp.boston.ma.us, autumn 2016
+#
 
 me=${0##*/}
 
