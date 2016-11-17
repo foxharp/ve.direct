@@ -21,6 +21,7 @@ copy of the data, in case you want to reprocess it.
 
 The "primitive" display simply takes over your terminal window and
 presents this simple display (from my BMV702 battery monitor):
+
     Voltage           12.358 Volts
     Current           0.259 Amps
     Power             -3.20 Watts
@@ -31,6 +32,7 @@ presents this simple display (from my BMV702 battery monitor):
     Battery temp.     51 degF
 
 The CSV file contains lines like this:
+
     # date/time, mV, mA, W, %charge (x10), time-left (sec), degrees C, alarm-reason
     2016-11-17-17:20:04, 12359, -258, -318, 939, 14400, 11, 0
     2016-11-17-17:20:06, 12358, -254, -313, 939, 14400, 11, 0
