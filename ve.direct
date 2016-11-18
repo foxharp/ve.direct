@@ -472,9 +472,10 @@ flush()
 
 loop()
 {
-    local was_checksum reason comma unit
+    local was_checksum reason comma unit badlines
     # assume we might have just missed reading the Checksum field
     was_checksum=1
+    badlines=0
 
     while :
     do
@@ -522,8 +523,21 @@ loop()
 	    test "$value" || echo "not enough data on a line"
 	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail"
 	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail" | hexdump -C
+
+	    # this error can happen if we've blocked trying to write
+	    # to the ncat server, probably because it has no clients,
+	    # and its buffers fill up.  we'll lose serial data while
+	    # blocked, and when ncat unblocks, we start reading the
+	    # serial device again, perhaps in the middle of a line,
+	    # which causes errors.  we'll try reading a couple of
+	    # lines to resynchronize, but we won't try forever.
+	    if (( badlines++ < 3 ))
+	    then
+		continue  # try for another line
+	    fi
 	    exit 1
 	fi
+	badlines=0
 
 	# date and time used for logging and plotting
 	printf -v now_date "%(%F)T" -1
