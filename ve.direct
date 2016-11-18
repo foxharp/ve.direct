@@ -31,10 +31,11 @@ me=${0##*/}
 usage()
 {
     exec >&2
-    cat <<-EOF
+    cat <<-\EOF
 usage: $me [options]
     options:
-     --panel             Enable real-time display "panel"
+     --panel             Enable real-time display "panel" (default)
+     --nopanel		 Suppress the default real-time panel display.
      --plot	         Enable creation of plot-ready CSV output file
                             (default if reading VE.Direct device directly)
      --noplot	         Suppress the plot-ready CSV output file
@@ -44,6 +45,7 @@ usage: $me [options]
      --backup	         Copy input data to file, for reuse by "--test"
      --device=<device>   Attach to "device" for input from VE.Direct interface
      --remote=<host>     Get data from a copy of this script running on "host"
+                             (default, if $VEDIRECT_HOST is set in environment)
      --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
      --raw	         Format and show data directly as it arrives
 			    (mostly for debug)
@@ -56,7 +58,7 @@ get_options()
     # configuration options:
     do_plot=1;	     # create csv file suitable for creating graphs
     force_plot=;     # force, even if remote
-    do_panel=;	     # show real-time panel display of most useful data
+    do_panel=1;	     # show real-time panel display of most useful data
     do_degF=1;	     # convert temperature to fahrenheit
     do_raw=;	     # display all data in "pretty" format, as it arrives
     do_data_backup=; # create reusable (with "--test") copy of all input data
@@ -68,8 +70,9 @@ get_options()
 	arg="$1"
 	case $arg in
 	--noplot)	do_plot=; ;;
-	--plot)		force_plot=1; ;;
+	--plot)		force_plot=1 ;;
 	--panel)	do_panel=1 ;;
+	--nopanel)	do_panel=; ;;
 	--fah*|-F)	do_degF=1 ;;
 	--cel*|-C)	do_degF=; ;;
 	--raw)		do_raw=1 ;;
@@ -113,6 +116,16 @@ get_options()
 	exec >&2
 	echo "$me: Error: Specify just one of --remote=, --test=, or --device="
 	exit 1
+    fi
+
+    # allow an environment variable to direct us to a remote host
+    # by default
+    if (( $inputs == 0 ))
+    then
+	if [[ $VEDIRECT_HOST ]]
+	then
+	    do_remotehost=$VEDIRECT_HOST 
+	fi
     fi
 }
 
