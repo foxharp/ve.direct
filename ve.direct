@@ -232,9 +232,9 @@ init_descriptions()
 
 # the script instance that talks to the VE.Direct device creates
 # a listening socket...
-ncat_writer="ncat --keep-open --listen --unixsock /tmp/victron-socket"
+ncat_server="ncat --send-only --keep-open --listen --unixsock /tmp/victron-socket"
 # ... in order to share the data with other instances:
-ncat_reader="ncat --idle-timeout 4 --unixsock /tmp/victron-socket"
+ncat_client="ncat --idle-timeout 4 --recv-only --unixsock /tmp/victron-socket"
 
 init_device_connections()
 {
@@ -257,7 +257,7 @@ init_device_connections()
     elif [[ $do_remotehost ]]
     then
 	: input from host $do_remotehost
-	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_reader'" ; }
+	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_client' "; }
 	trap_kill+="$ssh_input_PID "
 	input_fd=${ssh_input[0]}
 	# while we *could* create another socket locally, it causes
@@ -267,7 +267,7 @@ init_device_connections()
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     else
 	echo : input from local socket
-	coproc local_input { $ncat_reader ; }
+	coproc local_input { $ncat_client ; }
 	trap_kill+="$local_input_PID "
 	input_fd=${local_input[0]}
 	am_socket_writer=;
@@ -277,10 +277,18 @@ init_device_connections()
     # create the output socket
     if [[ $am_socket_writer ]]
     then
+	# start the server.  we send data to its stdin, clients (other
+	# instances of this script) connect via UNIX domain socket to
+	# fetch that data.
 	rm -f /tmp/victron-socket
-	coproc output { $ncat_writer ; }
+	coproc output { $ncat_server ; }
 	trap_kill+="$output_PID "
 	socket_out=${output[1]}
+
+	# connect at least one client to the server, so that we won't
+	# hang if it blocks it's input when no one is listening.
+	$ncat_client >/dev/null 2>&1 &
+	trap_kill+="$! "
     fi
 }
 
@@ -517,12 +525,13 @@ loop()
 	# text on the line.
 	if [[ ! $value || ! $field || $tail ]]
 	then
-	    exec >&2
+	    (
 	    echo -n "Something is wrong: "
 	    test "$tail" && echo "too much data on a line"
 	    test "$value" || echo "not enough data on a line"
 	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail"
 	    printf "line is '%s\t%s %s'\n" "$field" "$value" "$tail" | hexdump -C
+	    ) >&2
 
 	    # this error can happen if we've blocked trying to write
 	    # to the ncat server, probably because it has no clients,
@@ -677,7 +686,7 @@ loop()
 	    test "$do_testfile" && sleep .2
 	    ;;
 	"unknown")
-	    echo "Warning: unknown field name '$field', value '$value'"
+	    echo "Warning: unknown field name '$field', value '$value'" >&2
 	    ;;
 	esac
 
