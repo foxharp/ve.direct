@@ -336,7 +336,7 @@ emit_plot_data()
 	test "$hourly_comment" && printf "%s\n" "$hourly_comment"
 	printf "$now_date-$now_time"
 	# choose the values we might want to plot
-	for f in V I Pcalc SOC TTG T AR
+	for f in V I Pcalc CE SOC TTG T AR
 	do
 	    if [[ ${plot_data[$f]+isset} ]]
 	    then
