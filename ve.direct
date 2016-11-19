@@ -122,7 +122,7 @@ get_options()
     # by default
     if (( $inputs == 0 ))
     then
-	if [[ $VEDIRECT_HOST ]]
+	if [[ ${VEDIRECT_HOST:-} ]]
 	then
 	    do_remotehost=$VEDIRECT_HOST 
 	fi
@@ -138,7 +138,7 @@ misc_init()
     ve_device=;
     first_field=;
     socket_out=;
-    trapkill=;
+    trap_kill=;
 }
 
 # most of the fields are of a few simple types, differentiated by
@@ -266,7 +266,12 @@ init_device_connections()
 	am_socket_writer=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     else
-	echo : input from local socket
+	: input from local socket
+	if [[ ! -S /tmp/victron-socket ]]
+	then
+	    echo No socket to connect to.  >&1
+	    exit 1
+	fi
 	coproc local_input { $ncat_client ; }
 	trap_kill+="$local_input_PID "
 	input_fd=${local_input[0]}
