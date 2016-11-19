@@ -136,7 +136,7 @@ misc_init()
     desc_wid=10  # initial display width for label strings.  will adapt.
     prev_now_hour=99
     ve_device=;
-    seen_PID=;
+    first_field=;
     socket_out=;
     trapkill=;
 }
@@ -478,6 +478,33 @@ flush()
     done <&$input_fd  # read input stream
 }
 
+emit_summaries()
+{
+    if [[ ! $do_panel && ! $do_plot ]]
+    then
+	return
+    fi
+
+    if [[ $savedV && $savedI ]]
+    then
+	# current power in 100ths of a watt
+	power=$((savedV * savedI / 10000))
+	save_output Pcalc $power Watts 100
+    fi
+
+    # we're seeing PID for at least the second time
+    if [[ $do_panel ]]
+    then
+	emit_panel_display
+    fi
+
+    if [[ $do_plot ]]
+    then
+	emit_plot_data
+    fi
+
+}
+
 loop()
 {
     local was_checksum reason comma unit badlines
@@ -485,7 +512,7 @@ loop()
     was_checksum=1
     badlines=0
 
-    while :
+    while : top of loop
     do
 	# read the fieldname and the value, and any extra text into
 	# $tail.  use -r to suppress the special meaning of a '\'
@@ -553,6 +580,14 @@ loop()
 	printf -v now_time "%(%T)T" -1
 	printf -v now_hour "%(%H)T" -1
 
+	# optionally save the raw data to a file
+	if [[ $do_data_backup ]]
+	then
+	    printf "%s-%s	%s	%s\n" \
+		"$now_date" "$now_time" "$field" "$value" >> bmv-$now_date.log
+	fi
+
+	# if we're the "master" script (reading the VE.Direct device)
 	# make a copy of the received data available on a socket that
 	# another copy of this script can connect to and use.
 	if [[ $am_socket_writer ]]
@@ -561,11 +596,16 @@ loop()
 	    printf "%s	%s\n" "$field" "$value" >&$socket_out
 	fi
 
-	# optionally save this raw data to a file as well.
-	if [[ $do_data_backup ]]
+	# we use the periodic reappearance of the first field we
+	# to flush any accumulated output.  so make a note of it,
+	# and compare later on.
+	if [[ ! $first_field ]]
 	then
-	    printf "%s-%s	%s	%s\n" \
-		"$now_date" "$now_time" "$field" "$value" >> bmv-$now_date.log
+	    first_field=$field
+	elif [[ $field == $first_field ]]
+	then
+	    emit_summaries
+	    test "$do_testfile" && sleep .2
 	fi
 
 	unit=${units[$field]-unknown}
@@ -658,32 +698,6 @@ loop()
 	    esac
 
 	    save_output $field "$value" "" none
-
-	    # we use the appearance of the PID field to both capture
-	    # the product ID and also to flush any accumulated output
-	    if [[ $seen_PID && ( $do_panel || $do_plot ) ]]
-	    then
-		if [[ $savedV && $savedI ]]
-		then
-		    # current power in 100ths of a watt
-		    power=$((savedV * savedI / 10000))
-		    save_output Pcalc $power Watts 100
-		fi
-
-		# we're seeing PID for at least the second time
-		if [[ $do_panel ]]
-		then
-		    emit_panel_display
-		fi
-
-		if [[ $do_plot ]]
-		then
-		    emit_plot_data
-		fi
-	    fi
-	    seen_PID=true
-
-	    test "$do_testfile" && sleep .2
 	    ;;
 	"unknown")
 	    echo "Warning: unknown field name '$field', value '$value'" >&2
