@@ -120,11 +120,13 @@ get_options()
 
     # allow an environment variable to direct us to a remote host
     # by default
+    using_VEDIRECT_HOST=;
     if (( $inputs == 0 ))
     then
 	if [[ ${VEDIRECT_HOST:-} ]]
 	then
 	    do_remotehost=$VEDIRECT_HOST 
+	    using_VEDIRECT_HOST=1;
 	fi
     fi
 }
@@ -241,13 +243,14 @@ init_device_connections()
     # arrange for a known file descriptor to be our input stream
     if [[ $do_testfile ]]
     then
-	: input from $do_testfile
+	echo Taking input from file $do_testfile...
+	sleep .5
 	exec 3< $do_testfile
 	input_fd=3
 	am_socket_writer=true;
     elif [[ $ve_device ]]
     then
-	: input from $ve_device
+	echo Taking input from device $ve_device...
 	exec 3<$ve_device
 	input_fd=3
 	am_socket_writer=true;
@@ -256,7 +259,12 @@ init_device_connections()
 	stty -F $ve_device raw igncr 19200
     elif [[ $do_remotehost ]]
     then
-	: input from host $do_remotehost
+	echo Taking input from $me running on remote host $do_remotehost...
+	if [[ $using_VEDIRECT_HOST ]]
+	then
+	    echo '(because $VEDIRECT_HOST is set.)'
+	fi
+
 	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_client' "; }
 	trap_kill+="$ssh_input_PID "
 	input_fd=${ssh_input[0]}
@@ -266,10 +274,14 @@ init_device_connections()
 	am_socket_writer=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     else
-	: input from local socket
+	echo Taking input from another copy of $me running on local host...
 	if [[ ! -S /tmp/victron-socket ]]
 	then
-	    echo No socket to connect to.  >&1
+	    echo No socket to connect to.  >&2
+	    if [[ -e /tmp/victron-socket ]]
+	    then
+		echo '(/tmp/victron-socket exists but is not a socket.)' >&2
+	    fi
 	    exit 1
 	fi
 	coproc local_input { $ncat_client ; }
@@ -724,7 +736,8 @@ exit_trapfunc()
     fi
     if [[ $trap_kill ]]
     then
-	kill $trap_kill
+	# processes might already be dead
+	kill $trap_kill 2>/dev/null
     fi
 }
 
