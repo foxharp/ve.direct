@@ -318,8 +318,6 @@ emit_panel_display()
 {
     local f len power
 
-    test "$do_raw" && return  # already displayed, while accumulating data
-
     clear_screen
 
     # here we choose the specific values to put in the "panel" display
@@ -347,7 +345,11 @@ emit_panel_display()
 emit_plot_data()
 {
     local f
-    test "$do_plot" || return  # plot output not wanted
+
+    # date and time used for logging and plotting
+    printf -v now_date "%(%F)T" -1
+    printf -v now_time "%(%T)T" -1
+    printf -v now_hour "%(%H)T" -1
 
     if [[ $prev_now_hour != $now_hour ]]
     then
@@ -510,7 +512,7 @@ emit_summaries()
     fi
 
     # we're seeing PID for at least the second time
-    if [[ $do_panel ]]
+    if [[ $do_panel && ! $do_raw ]]
     then
 	emit_panel_display
     fi
@@ -592,14 +594,11 @@ loop()
 	fi
 	badlines=0
 
-	# date and time used for logging and plotting
-	printf -v now_date "%(%F)T" -1
-	printf -v now_time "%(%T)T" -1
-	printf -v now_hour "%(%H)T" -1
-
 	# optionally save the raw data to a file
 	if [[ $do_data_backup ]]
 	then
+	    printf -v now_date "%(%F)T" -1
+	    printf -v now_time "%(%T)T" -1
 	    printf "%s-%s	%s	%s\n" \
 		"$now_date" "$now_time" "$field" "$value" >> bmv-$now_date.log
 	fi
