@@ -136,7 +136,7 @@ misc_init()
     set -u  # catch undefined variables
     longest_desc=10
     desc_wid=10  # initial display width for label strings.  will adapt.
-    prev_now_hour=99
+    prev_savedTIME=0
     ve_device=;
     first_field=;
     socket_out=;
@@ -149,15 +149,18 @@ misc_init()
 # so we use two tables (units[] and descr[]) to associate a type and
 # a full description with every field.  (descriptions that are commented
 # out are the original descriptions from the Victron documentation)
-# there are two "pseudo fields" in the list below, which aren't actually
-# part of the Victron protocol:
+# there are three "pseudo fields" in the list below, which aren't actually
+# part of the Victron protocol, but rather are synthesized by the script:
 #  Pcalc -- this is instantaneous power, in hundredths of a Watt, as
 #           calculated from V * I.  (the P field sent from the BMV is
 #           in whole Watts, so no fractions are available.)
 #  ARstring -- this is a "string" version of AR.  the AR field gives a
 #           numeric interpretation of the Alarm Reason.  ARstring
 #           further interprets that into text, e.g. the number '5'
-#           becomes "lowV,low%".
+#           becomes "lowV,low%".  (better for display purposes.)
+#  TIME -- this is the time (in seconds since the unix epoch) at which
+#	    the current "frame" of data became available from VE.Direct.
+#	    (this lets the data's timestamp be displayed and plotted.)
 
 init_descriptions()
 {
@@ -172,14 +175,14 @@ init_descriptions()
     units[LOAD]="none";       descr[LOAD]="Load output state (ON/OFF)"
     units[T]="degC";          descr[T]="Battery temp." #  descr[T]="Battery temperature"
     units[P]="Watts";         descr[P]="Instantaneous power"
-    units[Pcalc]=".01Watts";  descr[Pcalc]="Power" # calculated from V and I
+    units[Pcalc]=".01Watts";  descr[Pcalc]="Power" # synthesized from V and I
     units[CE]="mAh";          descr[CE]="Charge consumed" # descr[CE]="Consumed Amp Hours"
     units[SOC]=".1%";         descr[SOC]="Capacity left" # descr[SOC]="State-of-charge"
     units[TTG]="minutes";     descr[TTG]="Time left" # descr[TTG]="Time-to-go"
     units[Alarm]="none";      descr[Alarm]="Alarm condition active"
     units[Relay]="none";      descr[Relay]="Relay state"
     units[AR]="alarm";        descr[AR]="Alarm reason"
-    units[ARstring]="alarm";  descr[ARstring]="Alarm reason" # calculated
+    units[ARstring]="alarm";  descr[ARstring]="Alarm reason" # synthesized
     units[H1]="mAh";          descr[H1]="Depth of the deepest discharge"
     units[H2]="mAh";          descr[H2]="Depth of the last discharge"
     units[H3]="mAh";          descr[H3]="Depth of the average discharge"
@@ -214,6 +217,7 @@ init_descriptions()
     units[AC_OUT_V]=".01V";   descr[AC_OUT_V]="AC output voltage"
     units[AC_OUT_I]=".1A";    descr[AC_OUT_I]="AC output current"
     units[WARN]="none";       descr[WARN]="Warning reason"
+    units[TIME]="daytime";    descr[TIME]="Time" # synthesized
     units[Checksum]="ignore"; descr[Checksum]="Checksum"  # ignored
 
     # Alarm reason (AR) bits:
@@ -321,7 +325,7 @@ emit_panel_display()
     clear_screen
 
     # here we choose the specific values to put in the "panel" display
-    for f in V I Pcalc CE SOC TTG H9 T ARstring
+    for f in TIME V I Pcalc CE SOC TTG H9 T ARstring
     do
 	# use a shell trick to decide if display[$f] has a value
 	if [[ ${display[$f]+isset} ]]
@@ -346,32 +350,29 @@ emit_plot_data()
 {
     local f
 
-    # date and time used for logging and plotting
-    printf -v now_date "%(%F)T" -1
-    printf -v now_time "%(%T)T" -1
-    printf -v now_hour "%(%H)T" -1
-
-    if [[ $prev_now_hour != $now_hour ]]
+    if (( prev_savedTIME < ( savedTIME - 1800 ) ))  # 30 minutes have passed
     then
-	printf -v hourly_comment \
-	    "# date/time, mV, mA, W, %%charge (x10), time-left (sec), degrees C, alarm-reason"
-	prev_now_hour=$now_hour
+	printf -v periodic_comment \
+	    "# date, mV, mA, Consumed Ah, W, %%charge (x10), time-left (sec), degrees C, alarm-reason"
+	prev_savedTIME=$savedTIME
     else
-	hourly_comment=;
+	periodic_comment=;
     fi
     (
-	test "$hourly_comment" && printf "%s\n" "$hourly_comment"
-	printf "$now_date-$now_time"
+	test "$periodic_comment" && printf "%s\n" "$periodic_comment"
+	# printf "$now_date-$now_time"
 	# choose the values we might want to plot
-	for f in V I Pcalc CE SOC TTG T AR
+	comma=;
+	for f in TIME V I Pcalc CE SOC TTG T AR
 	do
 	    if [[ ${plot_data[$f]+isset} ]]
 	    then
-		printf ", %s" "${plot_data[$f]}"
+		printf "$comma%s" "${plot_data[$f]}"
 		unset plot_data[$f]
 	    else
-		printf ", %s" "nodata"
+		printf "$comma%s" "nodata"
 	    fi
+	    comma=', '
 	done
 	printf "\n"
     ) >>bmv_plot-$now_date.csv
@@ -451,7 +452,7 @@ format_display_line()
     fi
 }
 
-save_output()
+set_output()
 {
     local field value
     field="$1"
@@ -465,10 +466,27 @@ save_output()
     I) savedI="$value" ;;
     esac
 
-    # save the display info for later
     [[ "$do_panel" ]] && display[$field]=$(format_display_line "$@")
-    [[ "$do_plot" ]]  && plot_data["$field"]="$value"
     [[ "$do_raw" ]]   && printf "%s\n" "$(format_display_line "$@")"
+    [[ "$do_plot" ]]  && plot_data[$field]=$value
+}
+
+set_special_output()
+{
+    local field value formatted_value
+    field="$1"
+    value="$2"
+    formatted_value="$3"
+    # save the display info for later
+    printf -v display[$field] "%-${desc_wid}s %s" "${descr[$field]}" "$formatted_value" 
+    if [[ "$do_raw" ]]
+    then
+	    printf "%s\n" "${display[$field]}"
+    fi
+    if [[ "$do_plot" ]]
+    then
+	    plot_data[$field]=$value
+    fi
 }
 
 flush()
@@ -498,18 +516,22 @@ flush()
 }
 
 emit_summaries()
-{
+{ 
     if [[ ! $do_panel && ! $do_plot ]]
     then
 	return
     fi
 
-    if [[ $savedV && $savedI ]]
+    if [[ ${savedV:-} && ${savedI:-} ]]
     then
 	# current power in 100ths of a watt
 	power=$((savedV * savedI / 10000))
-	save_output Pcalc $power Watts 100
+	set_output Pcalc $power Watts 100
     fi
+
+    # date and time used for logging and plotting
+    printf -v now_date "%(%F)T" $savedTIME
+    printf -v now_time "%(%T)T" $savedTIME
 
     # we're seeing PID for at least the second time
     if [[ $do_panel && ! $do_raw ]]
@@ -522,11 +544,22 @@ emit_summaries()
 	emit_plot_data
     fi
 
+    unset savedV savedI
+
+}
+
+to_clients()
+{
+	if [[ $am_socket_writer ]]
+	then
+	    : socket_out is $socket_out
+	    printf "%s	%s\n" "$field" "$value" >&$socket_out
+	fi
 }
 
 loop()
 {
-    local was_checksum reason comma unit badlines
+    local was_checksum reason comma unit badlines newvalue
     # assume we might have just missed reading the Checksum field
     was_checksum=1
     badlines=0
@@ -597,6 +630,7 @@ loop()
 	# optionally save the raw data to a file
 	if [[ $do_data_backup ]]
 	then
+	    local now_date now_time
 	    printf -v now_date "%(%F)T" -1
 	    printf -v now_time "%(%T)T" -1
 	    printf "%s-%s	%s	%s\n" \
@@ -606,11 +640,7 @@ loop()
 	# if we're the "master" script (reading the VE.Direct device)
 	# make a copy of the received data available on a socket that
 	# another copy of this script can connect to and use.
-	if [[ $am_socket_writer ]]
-	then
-	    : socket_out is $socket_out
-	    printf "%s	%s\n" "$field" "$value" >&$socket_out
-	fi
+	to_clients "$field" "$value"
 
 	# we use the periodic reappearance of the first field we
 	# to flush any accumulated output.  so make a note of it,
@@ -620,31 +650,41 @@ loop()
 	    first_field=$field
 	elif [[ $field == $first_field ]]
 	then
+	    # we didn't get a TIME field in the data, so create one now
+	    if [[ ! ${savedTIME:-} ]]
+	    then
+		printf -v savedTIME "%(%s)T" -1
+		to_clients TIME $savedTIME
+		test "$do_plot" && plot_data[TIME]=$savedTIME
+		printf -v newvalue "%(%F)T-%(%T)T" $savedTIME $savedTIME
+		set_special_output TIME $savedTIME "$newvalue"
+	    fi
+
 	    emit_summaries
 	    test "$do_testfile" && sleep .2
+	    unset savedTIME
 	fi
 
 	unit=${units[$field]-unknown}
 	case $unit in
-	"mV")	    save_output $field $value Volts 1000 ;;
-	".01V")	    save_output $field $value Volts 100 ;;
-	"mA")	    save_output $field $value Amps  1000 ;;
-	".1A")	    save_output $field $value Amps  10 ;;
-	"mAh")	    save_output $field $value Ah    1000 ;;
-	".01kWh")   save_output $field $value kWh   100 ;;
-	".1%")	    save_output $field $value %     10 ;;
-	"Watts")    save_output $field $value Watts none ;;
-	".01Watts") save_output $field $value Watts 100 ;;
-	"none")	    save_output $field $value ""    none ;;
-	"degC")     save_output $field $value degC  none ;;
+	"mV")	    set_output $field $value Volts 1000 ;;
+	".01V")	    set_output $field $value Volts 100 ;;
+	"mA")	    set_output $field $value Amps  1000 ;;
+	".1A")	    set_output $field $value Amps  10 ;;
+	"mAh")	    set_output $field $value Ah    1000 ;;
+	".01kWh")   set_output $field $value kWh   100 ;;
+	".1%")	    set_output $field $value %     10 ;;
+	"Watts")    set_output $field $value Watts none ;;
+	".01Watts") set_output $field $value Watts 100 ;;
+	"none")	    set_output $field $value ""    none ;;
+	"degC")     set_output $field $value degC  none ;;
 	"ignore")                                        ;;
 
 	"minutes"|"seconds")
 	    test "$do_plot" && plot_data["$field"]="$value"
 	    if (( $value < 0 ))
 	    then
-		printf -v display[$field] "%-${desc_wid}s infinite" \
-		    "${descr[$field]}"
+		set_special_output $field $value "infinite"
 	    else
 
 		# split seconds into minutes and seconds
@@ -677,14 +717,23 @@ loop()
 		# format with seconds or not, depending on what we started with
 		if [[ $unit = "seconds" ]]
 		then
-		    printf -v display[$field] "%-${desc_wid}s %s%sh %sm %ss" \
-			"${descr[$field]}" "$day" "$hour" "$min" "$sec"
+		    printf -v newvalue "%s%sh %sm %ss" \
+			"$day" "$hour" "$min" "$sec"
 		else
-		    printf -v display[$field] "%-${desc_wid}s %s%sh %sm" \
-			"${descr[$field]}" "$day" "$hour" "$min"
+		    printf -v newvalue "%s%sh %sm" \
+			"$day" "$hour" "$min"
 		fi
+		set_special_output $field $value "$newvalue"
 	    fi
-	    test "$do_raw" && printf "%s\n" "${display[$field]}"
+	    # test "$do_raw" && printf "%s\n" "${display[$field]}"
+	    ;;
+
+	"daytime")
+	    local newvalue
+	    printf -v newvalue "%(%F)T-%(%T)T" $value $value
+	    set_special_output $field $value "$newvalue"
+	    savedTIME="$value"
+	    # test "$do_raw" && printf "%s\n" "${display[$field]}"
 	    ;;
 
 	"alarm")
@@ -701,19 +750,20 @@ loop()
 			comma=","
 		    fi
 		done
-		save_output ARstring "$reason" "" none
+		set_special_output ARstring $value "$reason"
 	    fi
-	    save_output AR "$value" "" none
+	    set_output AR "$value" "" none
 	    ;;
 
 	"product")
 	    case $value in
-            0x20[345])              value=BMV-70X ;;
-            0x300|0xA0[45][0-9A-F]) value="BlueSolar MPPT" ;;
-            0xA2[012][124])         value="Phoenix Inverter" ;;
+            0x20[345])              newvalue=BMV-70X ;;
+            0x300|0xA0[45][0-9A-F]) newvalue="BlueSolar MPPT" ;;
+            0xA2[012][124])         newvalue="Phoenix Inverter" ;;
+	    *)			    newvalue="Unknown product" ;;
 	    esac
 
-	    save_output $field "$value" "" none
+	    set_special_output $field $value "$newvalue"
 	    ;;
 	"unknown")
 	    echo "Warning: unknown field name '$field', value '$value'" >&2
