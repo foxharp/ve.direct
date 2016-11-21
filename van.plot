@@ -155,7 +155,9 @@ GNUTERM = "qt"
 x = 0.0
 set xrange [ * : * ] noreverse nowriteback
 set yrange [10:16]
-set y2range [-30:30]
+#set y2range [-30:30]
+set y2range [-5:5]
+# set logscale y2
 
 set ytics nomirror
 set ylabel 'Volts'
@@ -163,8 +165,12 @@ set ylabel 'Volts'
 set y2tics
 set y2label 'Amps'
 
-set autoscale y
-set autoscale y2
+# set autoscale y
+# set autoscale y2
 
-plot "bmv_plot-2016-11-21.csv" using ($1+(-5*3600)):($2/1000) axes x1y1 title "Volts", "bmv_plot-2016-11-21.csv" using ($1+(-5*3600)):($3/1000) axes x1y2 title "Amps" 
+set grid
+
+fname = "/tmp/vandata"
+plot fname using ($1+(-5*3600)):($2/1000) axes x1y1 title "Volts", fname using ($1+(-5*3600)):($3/1000) axes x1y2 title "Amps" 
+pause mouse close
 #    EOF
