@@ -238,7 +238,8 @@ init_descriptions()
 
 # the script instance that talks to the VE.Direct device creates
 # a listening socket...
-ncat_server="ncat --send-only --keep-open --listen --unixsock /tmp/victron-socket"
+ncat_server="ncat --send-only --idle-timeout 4 \
+    --keep-open --listen --unixsock /tmp/victron-socket"
 # ... in order to share the data with other instances:
 ncat_client="ncat --idle-timeout 4 --recv-only --unixsock /tmp/victron-socket"
 
@@ -550,6 +551,10 @@ emit_summaries()
 
 to_clients()
 {
+	local field value
+	field="$1"
+	value="$2"
+
 	if [[ $am_socket_writer ]]
 	then
 	    : socket_out is $socket_out
