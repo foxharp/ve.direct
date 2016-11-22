@@ -353,15 +353,17 @@ emit_plot_data()
 
     if (( prev_savedTIME < ( savedTIME - 1800 ) ))  # 30 minutes have passed
     then
-	printf -v periodic_comment \
-	    "# date, mV, mA, Consumed Ah, W, %%charge (x10), time-left (sec), degrees C, alarm-reason"
+	printf -v periodic_comment "%b%b%b" \
+	    "# date, mV, mA, Consumed Ah, W, %%charge (x10), " \
+	    "time-left (sec), degrees C, alarm-reason\n" \
+	    "# timestamp: $now_date-$now_time\n"
 	prev_savedTIME=$savedTIME
     else
 	periodic_comment=;
     fi
     (
-	test "$periodic_comment" && printf "%s\n" "$periodic_comment"
-	# printf "$now_date-$now_time"
+	test "$periodic_comment" && printf "%s" "$periodic_comment"
+
 	# choose the values we might want to plot
 	comma=;
 	for f in TIME V I Pcalc CE SOC TTG T AR
