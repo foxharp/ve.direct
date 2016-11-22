@@ -353,9 +353,8 @@ emit_plot_data()
 
     if (( prev_savedTIME < ( savedTIME - 1800 ) ))  # 30 minutes have passed
     then
-	printf -v periodic_comment "%b%b%b" \
-	    "# date, mV, mA, Consumed Ah, W, %%charge (x10), " \
-	    "time-left (sec), degrees C, alarm-reason\n" \
+	printf -v periodic_comment "%b%b" \
+	    "# date, mV, mA, centiW, used mAh, SOC, time-left, degC, alarm\n" \
 	    "# timestamp: $now_date-$now_time\n"
 	prev_savedTIME=$savedTIME
     else
