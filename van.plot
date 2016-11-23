@@ -170,6 +170,8 @@ set y2label 'Amps'
 
 set grid
 
+set term x11
+
 fname = "/tmp/vandata"
 plot fname using ($1+(-5*3600)):($2/1000) axes x1y1 title "Volts", fname using ($1+(-5*3600)):($3/1000) axes x1y2 title "Amps" 
 pause mouse close
