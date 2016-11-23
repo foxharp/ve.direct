@@ -1,11 +1,11 @@
 
 
 Many products from Victron Energy (www.victronenergy.com) seem to
-implement their VE.Direct protocol, which allows remote monitoring
+implement their "VE.Direct" protocol, which allows remote monitoring
 (and some control) of those devices.  At its simplest (monitoring
-only), it's a 19200 baud stream of keyword/value pairs, reporting
-various parameters (voltage, current, battery capacity, etc) from
-their devices.  The monitoring protocol is specified here:
+only), VE.Direct is a 19200 baud ASCII stream of keyword/value pairs,
+reporting various parameters (voltage, current, battery capacity, etc)
+from the device.  The monitoring protocol is specified here:
     https://www.victronenergy.com/support-and-downloads/whitepapers
     (search for "VE.Direct Protocol")
 with a little more information here:
@@ -47,6 +47,10 @@ the code.
 (Victron also has an interactive command/response protocol, described
 in other papers at the above link.  This script doesn't do anything
 with that.  See the "HEX Protocol" documents at the above link.)
+
+The client/server aspects are based on ssh, so the security
+implications of connecting to a remote host to get battery data are
+minimal.
 
 And, just because I enjoy it, and usually learn something new when I
 push the boundaries of the language, it's all implemented in bash.
