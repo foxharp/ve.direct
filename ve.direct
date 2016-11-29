@@ -46,6 +46,8 @@ usage: $me [options]
      --device=<device>   Attach to "device" for input from VE.Direct interface
      --remote=<host>     Get data from a copy of this script running on "host"
                              (default, if $VEDIRECT_HOST is set in environment)
+     --logdir=<path>	 Create all plot and log files in "path".
+			     (default's to current directory)
      --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
      --raw	         Format and show data directly as it arrives
 			    (mostly for debug)
@@ -56,12 +58,13 @@ EOF
 get_options()
 {
     # configuration options:
-    do_plot=1;	     # create csv file suitable for creating graphs
+    do_plot=1;	     # create CSV file suitable for creating graphs
     force_plot=;     # force, even if remote
     do_panel=1;	     # show real-time panel display of most useful data
     do_degF=1;	     # convert temperature to fahrenheit
     do_raw=;	     # display all data in "pretty" format, as it arrives
     do_data_backup=; # create reusable (with "--test") copy of all input data
+    logpath=".";     # directory where logs and CSV files should live
     do_remotehost=;  # ssh to remote host, connect to socket there
     do_testfile=;    # read data from given file instead of VE.Direct device
     ve_device=;      # connect to VE.Direct device
@@ -77,6 +80,14 @@ get_options()
 	--cel*|-C)	do_degF=; ;;
 	--raw)		do_raw=1 ;;
 	--backup)	do_data_backup=1 ;;
+	--logdir=*)
+	    logpath=${arg#--logdir=}
+	    if [[ ! $logpath ]]
+	    then
+		echo "No pathname given with --logdir" >&2
+		usage
+	    fi
+	    ;;
 	--remote=*)
 	    do_remotehost=${arg#--remote=}
 	    if [[ ! $do_remotehost ]]
@@ -377,7 +388,7 @@ emit_plot_data()
 	    comma=', '
 	done
 	printf "\n"
-    ) >>bmv_plot-$now_date.csv
+    ) >>$logpath/bmv_plot-$now_date.csv
 }
 
 modulo_split()
@@ -640,7 +651,7 @@ loop()
 	    printf -v now_date "%(%F)T" -1
 	    printf -v now_time "%(%T)T" -1
 	    printf "%s-%s	%s	%s\n" \
-		"$now_date" "$now_time" "$field" "$value" >> bmv-$now_date.log
+		"$now_date" "$now_time" "$field" "$value" >> $logpath/bmv-$now_date.log
 	fi
 
 	# if we're the "master" script (reading the VE.Direct device)
