@@ -1,6 +1,10 @@
 #!/bin/bash
 
-cd $HOME/victron || exit 1
+# assume this script lives near the logs
+me=${0##*/}   # basename $0
+mydir=${0%/*} # dirname $0
+
+cd "$mydir" || exit 1
 
 # the ID of the serial device.  discover this string
 # with "ls /dev/serial/by-id".
@@ -10,12 +14,15 @@ ttyid=usb-FTDI_FT232EX-if00-port0
 
 if [ ! -e /dev/serial/by-id/$ttyid ]
 then
-    echo Warning: no such serial device $ttyid.
-    echo continuing...
+    exec >&2
+    echo Error: no such serial device $ttyid
+    echo Choices:
+    ls /dev/serial/by-id/* 2>/dev/null || echo "  <none>"
+    exit 1
 fi
 
 exec ./ve.direct \
 	--nopanel \
-	--logdir=$HOME/victron/logs \
+	--logdir=./logs \
 	--device=/dev/serial/by-id/$ttyid
 
