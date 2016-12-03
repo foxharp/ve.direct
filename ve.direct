@@ -401,12 +401,16 @@ modulo_split()
     #
     # leaves results in $Div and $Mod
     #
-    local val modulo mod
+    local val modulo mod neg
     val=$1
     modulo=$2
+    neg=;
+
+    case $val in
+    -*) neg='-'; val=${val#-} ;;
+    esac
 
     mod=$((val % modulo))
-    mod=${mod#-}  # remove sign from decimal part
 
     # in the above example, we want to be sure we get "036"
     # for the decimal part, and not just "36".
@@ -418,7 +422,7 @@ modulo_split()
 
     # convert it using %02d, %03d, or %d
     printf -v Mod "%${decwid}d" $mod
-    Div=$((val / modulo))
+    Div=$neg$((val / modulo))
 }
 
 fraction()
