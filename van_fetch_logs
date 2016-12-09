@@ -1,0 +1,32 @@
+#!/bin/bash
+
+if [ ! "$BASH_VERSION" ]
+then
+    echo run $0 only with bash
+    exit 1
+fi
+
+mypath=$0
+me=${mypath##*/}  # for usage() and errors
+if [[ -L $mypath ]]
+then
+    mypath=$(readlink $mypath)
+fi
+
+mydir=${mypath%/*}
+
+logdir=$mydir/vanlogs
+
+
+
+if [[ ! -d $logdir ]]
+then
+    exec >&2
+    echo $me: no such directory $logdir
+    exit 1
+fi
+
+rsync --verbose --itemize-changes --times \
+    vanilla:victron/logs/*csv \
+    $logdir
+
