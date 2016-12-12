@@ -47,7 +47,7 @@ usage: $me [options]
      --remote=<host>     Get data from a copy of this script running on "host"
                              (default, if $VEDIRECT_HOST is set in environment)
      --logdir=<path>	 Create all plot and log files in "path".
-			     (default's to current directory)
+			     (defaults to current directory)
      --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
      --raw	         Format and show data directly as it arrives
 			    (mostly for debug)
@@ -578,6 +578,50 @@ to_clients()
 	fi
 }
 
+split_time()   # sets SplitTime
+{
+    local unit value min sec hour day
+    unit="$1"
+    value="$2"
+
+    # split seconds into minutes and seconds
+    if [[ $unit = "seconds" ]]
+    then
+	modulo_split $value 60
+	min=$Div
+	sec=$Mod
+    else
+	min=$value
+    fi
+    # split minutes into hours and minutes
+    modulo_split $min 60
+    hour=$Div
+    min=$Mod
+
+    # split hours into days and hours
+    modulo_split $hour 24
+    day=$Div
+    hour=$Mod
+
+    # suppress days if zero
+    if [[ $day > 0 ]]
+    then
+	day="${day}d "
+    else
+	day=""
+    fi
+
+    # format with seconds or not, depending on what we started with
+    if [[ $unit = "seconds" ]]
+    then
+	printf -v SplitTime "%s%sh %sm %ss" \
+	    "$day" "$hour" "$min" "$sec"
+    else
+	printf -v SplitTime "%s%sh %sm" \
+	    "$day" "$hour" "$min"
+    fi
+}
+
 loop()
 {
     local was_checksum reason comma unit badlines newvalue
@@ -707,44 +751,8 @@ loop()
 	    then
 		set_special_output $field $value "infinite"
 	    else
-
-		# split seconds into minutes and seconds
-		if [[ $unit = "seconds" ]]
-		then
-		    modulo_split $value 60
-		    min=$Div
-		    sec=$Mod
-		else
-		    min=$value
-		fi
-		# split minutes into hours and minutes
-		modulo_split $min 60
-		hour=$Div
-		min=$Mod
-
-		# split hours into days and hours
-		modulo_split $hour 24
-		day=$Div
-		hour=$Mod
-
-		# suppress days if zero
-		if [[ $day > 0 ]]
-		then
-		    day="${day}d "
-		else
-		    day=""
-		fi
-
-		# format with seconds or not, depending on what we started with
-		if [[ $unit = "seconds" ]]
-		then
-		    printf -v newvalue "%s%sh %sm %ss" \
-			"$day" "$hour" "$min" "$sec"
-		else
-		    printf -v newvalue "%s%sh %sm" \
-			"$day" "$hour" "$min"
-		fi
-		set_special_output $field $value "$newvalue"
+		split_time $unit $value
+		set_special_output $field $value "$SplitTime"
 	    fi
 	    # test "$do_raw" && printf "%s\n" "${display[$field]}"
 	    ;;
