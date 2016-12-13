@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# find last start:
+# tac $(ls -r *.csv) | sed -n \
+#    -e '/^\([^,]\+\),[^,]\+, -[56789][0-9][0-9][0-9][0-9],.*/{s//\1/p;q}'
+
 if [ ! "$BASH_VERSION" ]
 then
     echo run $0 only with bash

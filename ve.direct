@@ -136,7 +136,7 @@ get_options()
     then
 	if [[ ${VEDIRECT_HOST:-} ]]
 	then
-	    do_remotehost=$VEDIRECT_HOST 
+	    do_remotehost=$VEDIRECT_HOST
 	    using_VEDIRECT_HOST=1;
 	fi
     fi
@@ -147,11 +147,12 @@ misc_init()
     set -u  # catch undefined variables
     longest_desc=10
     desc_wid=10  # initial display width for label strings.  will adapt.
-    prev_savedTIME=0
     ve_device=;
     first_field=;
     socket_out=;
     trap_kill=;
+    last_started=0
+    prev_TIME=0
 }
 
 # most of the fields are of a few simple types, differentiated by
@@ -162,16 +163,19 @@ misc_init()
 # out are the original descriptions from the Victron documentation)
 # there are three "pseudo fields" in the list below, which aren't actually
 # part of the Victron protocol, but rather are synthesized by the script:
+#  TIME -- the BMV doesn't have a clock.  this synthesized field is the
+#	    time (in seconds since the unix epoch) at which the current
+#	    "frame" of data became available from VE.Direct.  (this lets
+#	    the data's timestamp be displayed and plotted.)
 #  Pcalc -- this is instantaneous power, in hundredths of a Watt, as
 #           calculated from V * I.  (the P field sent from the BMV is
 #           in whole Watts, so no fractions are available.)
-#  ARstring -- this is a "string" version of AR.  the AR field gives a
-#           numeric interpretation of the Alarm Reason.  ARstring
-#           further interprets that into text, e.g. the number '5'
-#           becomes "lowV,low%".  (better for display purposes.)
-#  TIME -- this is the time (in seconds since the unix epoch) at which
-#	    the current "frame" of data became available from VE.Direct.
-#	    (this lets the data's timestamp be displayed and plotted.)
+#  ARstring -- this is a "string" version of AR.  the AR field is a
+#           numeric bitfield encoding the Alarm Reason.  ARstring
+#           translates that into text, e.g. the number '5' becomes
+#	    "lowV,low%".  (better for display purposes.)
+#  Tstart -- this is the time (in seconds) since the last engine start
+#	    was detected (i.e., current draw greater than 50A).
 
 init_descriptions()
 {
@@ -229,6 +233,7 @@ init_descriptions()
     units[AC_OUT_I]=".1A";    descr[AC_OUT_I]="AC output current"
     units[WARN]="none";       descr[WARN]="Warning reason"
     units[TIME]="daytime";    descr[TIME]="Time" # synthesized
+    units[Tstart]="minutes";  descr[Tstart]="Time since engine start" # synthesized
     units[Checksum]="ignore"; descr[Checksum]="Checksum"  # ignored
 
     # Alarm reason (AR) bits:
@@ -330,67 +335,6 @@ clear_screen()
     printf "\e[H\e[2J"
 }
 
-emit_panel_display()
-{
-    local f len power
-
-    clear_screen
-
-    # here we choose the specific values to put in the "panel" display
-    for f in TIME V I Pcalc CE SOC TTG H9 T ARstring
-    do
-	# use a shell trick to decide if display[$f] has a value
-	if [[ ${display[$f]+isset} ]]
-	then
-	    printf "%s\n" "${display[$f]}" 
-
-	    # keep track of the longest description field, to size
-	    # the width of the output in the future
-	    len=${#descr[$f]} 
-	    if (( $len > $longest_desc ))
-	    then
-		longest_desc=$len
-	    fi
-	    # we used this display.  get rid of it
-	    unset display[$f]
-	fi
-    done
-    desc_wid=$(( $longest_desc + 2 ))
-}
-
-emit_plot_data()
-{
-    local f
-
-    if (( prev_savedTIME < ( savedTIME - 1800 ) ))  # 30 minutes have passed
-    then
-	printf -v periodic_comment "%b%b" \
-	    "# date, mV, mA, centiW, used mAh, SOC, time-left, degC, alarm\n" \
-	    "# timestamp: $now_date-$now_time\n"
-	prev_savedTIME=$savedTIME
-    else
-	periodic_comment=;
-    fi
-    (
-	test "$periodic_comment" && printf "%s" "$periodic_comment"
-
-	# choose the values we might want to plot
-	comma=;
-	for f in TIME V I Pcalc CE SOC TTG T AR
-	do
-	    if [[ ${plot_data[$f]+isset} ]]
-	    then
-		printf "$comma%s" "${plot_data[$f]}"
-		unset plot_data[$f]
-	    else
-		printf "$comma%s" "nodata"
-	    fi
-	    comma=', '
-	done
-	printf "\n"
-    ) >>$logpath/bmv_plot-$now_date.csv
-}
-
 modulo_split()
 {
     # the shell doesn't do decimal arithmetic.  so to
@@ -475,17 +419,9 @@ set_output()
     field="$1"
     value="$2"
 
-    # save voltage and current, for calculating power later
-    # (we calculate our own value rather than using "P" so that we can
-    # display fractions of a watt)
-    case $field in
-    V) savedV="$value" ;;
-    I) savedI="$value" ;;
-    esac
-
     [[ "$do_panel" ]] && display[$field]=$(format_display_line "$@")
     [[ "$do_raw" ]]   && printf "%s\n" "$(format_display_line "$@")"
-    [[ "$do_plot" ]]  && plot_data[$field]=$value
+    plot_data[$field]=$value
 }
 
 set_special_output()
@@ -495,15 +431,28 @@ set_special_output()
     value="$2"
     formatted_value="$3"
     # save the display info for later
-    printf -v display[$field] "%-${desc_wid}s %s" "${descr[$field]}" "$formatted_value" 
+    printf -v display[$field] "%-${desc_wid}s %s" "${descr[$field]}" "$formatted_value"
     if [[ "$do_raw" ]]
     then
-	    printf "%s\n" "${display[$field]}"
+	printf "%s\n" "${display[$field]}"
     fi
-    if [[ "$do_plot" ]]
+    plot_data[$field]=$value
+}
+
+set_time_output()
+{
+    local field value unit
+    field="$1"
+    value="$2"
+    unit="$3"
+    if (( $value < 0 ))
     then
-	    plot_data[$field]=$value
+	set_special_output $field $value "infinite"
+    else
+	split_time $unit $value
+	set_special_output $field $value "$SplitTime"
     fi
+    plot_data["$field"]="$value"
 }
 
 flush()
@@ -511,7 +460,7 @@ flush()
     local keep_reading
     local field everything_else
 
-    # there's a pause in the BMV output just before the checksum byte. 
+    # there's a pause in the BMV output just before the checksum byte.
     # as a result we very often read that byte (and newline) in the
     # very first read.  so we skip the first line, as well as empty
     # lines and Checksum lines.
@@ -532,37 +481,69 @@ flush()
     done <&$input_fd  # read input stream
 }
 
-emit_summaries()
-{ 
-    if [[ ! $do_panel && ! $do_plot ]]
-    then
-	return
-    fi
+emit_panel_display()
+{
+    local f len power
 
-    if [[ ${savedV:-} && ${savedI:-} ]]
-    then
-	# current power in 100ths of a watt
-	power=$((savedV * savedI / 10000))
-	set_output Pcalc $power Watts 100
-    fi
+    clear_screen
+
+    # here we choose the specific values to put in the "panel" display
+    for f in TIME V I Pcalc CE SOC TTG H9 T Tstart ARstring
+    do
+	# use a shell trick to decide if display[$f] has a value
+	if [[ ${display[$f]+isset} ]]
+	then
+	    printf "%s\n" "${display[$f]}"
+
+	    # keep track of the longest description field, to size
+	    # the width of the output in the future
+	    len=${#descr[$f]}
+	    if (( $len > $longest_desc ))
+	    then
+		longest_desc=$len
+	    fi
+	    # we used this display.  get rid of it
+	    unset display[$f]
+	fi
+    done
+    desc_wid=$(( $longest_desc + 2 ))
+}
+
+emit_plot_data()
+{
+    local f comma
 
     # date and time used for logging and plotting
-    printf -v now_date "%(%F)T" $savedTIME
-    printf -v now_time "%(%T)T" $savedTIME
+    printf -v now_date "%(%F)T" ${plot_data[TIME]}
+    printf -v now_time "%(%T)T" ${plot_data[TIME]}
 
-    # we're seeing PID for at least the second time
-    if [[ $do_panel && ! $do_raw ]]
+    if (( prev_TIME < ( ${plot_data[TIME]} - 1800 ) ))  # 30 minutes have passed
     then
-	emit_panel_display
+	printf -v periodic_comment "%b%b" \
+	    "# date, mV, mA, centiW, used mAh, SOC, time-left, degC, alarm\n" \
+	    "# timestamp: $now_date-$now_time\n"
+	prev_TIME=${plot_data[TIME]}
+    else
+	periodic_comment=;
     fi
+    (
+	test "$periodic_comment" && printf "%s" "$periodic_comment"
 
-    if [[ $do_plot ]]
-    then
-	emit_plot_data
-    fi
-
-    unset savedV savedI
-
+	# choose the values we might want to plot
+	comma=;
+	for f in TIME V I Pcalc CE SOC TTG T AR
+	do
+	    if [[ ${plot_data[$f]+isset} ]]
+	    then
+		printf "$comma%s" "${plot_data[$f]}"
+		unset plot_data[$f]
+	    else
+		printf "$comma%s" "nodata"
+	    fi
+	    comma=', '
+	done
+	printf "\n"
+    ) >>$logpath/bmv_plot-$now_date.csv
 }
 
 to_clients()
@@ -622,12 +603,72 @@ split_time()   # sets SplitTime
     fi
 }
 
+synthesize_data()
+{
+    local reason comma
+
+    # convert AR numeric bits to comma-separated strings
+    reason=;
+    comma=;
+    if (( ${plot_data[AR]} != 0 ))
+    then
+	for bit in {0..11}
+	do
+	    if (( $value & (1 << $bit) ))
+	    then
+		reason="$reason$comma${alarm[$bit]}"
+		comma=","
+	    fi
+	done
+	set_special_output ARstring $value "$reason"
+    fi
+
+    # calculate current power in 100ths of a watt
+    power=$(( plot_data[V] * plot_data[I]  / 10000))
+    set_output Pcalc $power Watts 100
+
+    local now
+    printf -v now "%(%s)T" -1
+
+    # we only create a TIME value, and maintain an "engine_started"
+    # file, if we own the device directly.
+    if [[ $ve_device ]]
+    then
+	to_clients TIME $now
+	plot_data[TIME]=$now
+	printf -v newvalue "%(%F)T-%(%T)T" $now $now
+	set_special_output TIME $now "$newvalue"
+
+	# has the engine just been started?
+	if (( plot_data[I] < -50000 ))  # 50 amps
+	then
+	    last_started=$now
+	    echo $last_started > $logpath/engine_started
+	fi
+
+	# create the "time since last start" datum
+	if [[ $last_started != 0 ]]
+	then
+	    tstart=$(( (now - last_started)/60 ))
+	else
+	    tstart="-1"
+	fi
+	to_clients Tstart $tstart
+	set_time_output Tstart $tstart minutes
+    fi
+}
+
 loop()
 {
-    local was_checksum reason comma unit badlines newvalue
+    local was_checksum unit badlines newvalue
     # assume we might have just missed reading the Checksum field
     was_checksum=1
     badlines=0
+
+    if [ -e $logpath/engine_started ]
+    then
+	last_started=$(<$logpath/engine_started)
+    fi
 
     while : top of loop
     do
@@ -715,19 +756,24 @@ loop()
 	    first_field=$field
 	elif [[ $field == $first_field ]]
 	then
-	    # we didn't get a TIME field in the data, so create one now
-	    if [[ ! ${savedTIME:-} ]]
+	    # this is the point at which we've seen every key/value
+	    # pair -- they're about to start repeating.  so now's the
+	    # time to synthesize any data we need, and produce any
+	    # output
+
+	    synthesize_data
+
+	    if [[ $do_panel && ! $do_raw ]]
 	    then
-		printf -v savedTIME "%(%s)T" -1
-		to_clients TIME $savedTIME
-		test "$do_plot" && plot_data[TIME]=$savedTIME
-		printf -v newvalue "%(%F)T-%(%T)T" $savedTIME $savedTIME
-		set_special_output TIME $savedTIME "$newvalue"
+		emit_panel_display
 	    fi
 
-	    emit_summaries
+	    if [[ $do_plot ]]
+	    then
+		emit_plot_data
+	    fi
+
 	    test "$do_testfile" && sleep .2
-	    unset savedTIME
 	fi
 
 	unit=${units[$field]-unknown}
@@ -746,41 +792,17 @@ loop()
 	"ignore")                                        ;;
 
 	"minutes"|"seconds")
-	    test "$do_plot" && plot_data["$field"]="$value"
-	    if (( $value < 0 ))
-	    then
-		set_special_output $field $value "infinite"
-	    else
-		split_time $unit $value
-		set_special_output $field $value "$SplitTime"
-	    fi
-	    # test "$do_raw" && printf "%s\n" "${display[$field]}"
+	    set_time_output $field $value $unit
 	    ;;
 
 	"daytime")
 	    local newvalue
 	    printf -v newvalue "%(%F)T-%(%T)T" $value $value
 	    set_special_output $field $value "$newvalue"
-	    savedTIME="$value"
 	    # test "$do_raw" && printf "%s\n" "${display[$field]}"
 	    ;;
 
 	"alarm")
-	    # convert AR numeric bits to comma-separated strings
-	    reason=;
-	    comma=;
-	    if (( $value != 0 ))
-	    then
-		for bit in {0..11}
-		do
-		    if (( $value & (1 << $bit) ))
-		    then
-			reason="$reason$comma${alarm[$bit]}"
-			comma=","
-		    fi
-		done
-		set_special_output ARstring $value "$reason"
-	    fi
 	    set_output AR "$value" "" none
 	    ;;
 
