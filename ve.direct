@@ -281,10 +281,10 @@ init_device_connections()
     elif [[ $do_remotehost ]]
     then
 	echo Taking input from $me running on remote host $do_remotehost...
-	if [[ $using_VEDIRECT_HOST ]]
-	then
-	    echo '(because $VEDIRECT_HOST is set.)'
-	fi
+	# if [[ $using_VEDIRECT_HOST ]]
+	# then
+	#     echo '(because $VEDIRECT_HOST is set.)'
+	# fi
 
 	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_client' "; }
 	trap_kill+="$ssh_input_PID "
@@ -555,7 +555,7 @@ to_clients()
 	if [[ $am_socket_writer ]]
 	then
 	    : socket_out is $socket_out
-	    printf "%s	%s\n" "$field" "$value" >&$socket_out
+	    printf "%s	%s\n" "$field" "$value" >&$socket_out || exit 1
 	fi
 }
 
