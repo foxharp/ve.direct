@@ -610,7 +610,7 @@ synthesize_data()
     # convert AR numeric bits to comma-separated strings
     reason=;
     comma=;
-    if (( ${plot_data[AR]} != 0 ))
+    if (( ${plot_data[AR]:-0} != 0 ))
     then
 	for bit in {0..11}
 	do
@@ -840,6 +840,8 @@ exit_trapfunc()
 	kill $trap_kill 2>/dev/null
     fi
 }
+
+# echo $$ >/tmp/$me.pid
 
 trap "exit_trapfunc" 0
 misc_init
