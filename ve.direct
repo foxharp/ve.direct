@@ -36,6 +36,7 @@ usage: $me [options]
     options:
      --panel             Enable real-time display "panel" (default)
      --nopanel		 Suppress the default real-time panel display.
+     --snapshot          Show one panel "frame" on stdout, then quit.
      --plot	         Enable creation of plot-ready CSV output file
                             (default if reading VE.Direct device directly)
      --noplot	         Suppress the plot-ready CSV output file
@@ -59,6 +60,7 @@ get_options()
 {
     # configuration options:
     do_plot=1;	     # create CSV file suitable for creating graphs
+    do_snap=;	     # do panel snapshot
     force_plot=;     # force, even if remote
     do_panel=1;	     # show real-time panel display of most useful data
     do_degF=1;	     # convert temperature to fahrenheit
@@ -74,6 +76,7 @@ get_options()
 	case $arg in
 	--noplot)	do_plot=; ;;
 	--plot)		force_plot=1 ;;
+	--snapshot)	do_snap=1 ;;
 	--panel)	do_panel=1 ;;
 	--nopanel)	do_panel=; ;;
 	--fah*|-F)	do_degF=1 ;;
@@ -127,6 +130,15 @@ get_options()
 	exec >&2
 	echo "$me: Error: Specify just one of --remote=, --test=, or --device="
 	exit 1
+    fi
+
+    # if snapshot'ing, don't plot or produce other log files
+    if [[ $do_snap ]]
+    then
+	do_panel=1
+	do_plot=;
+	do_raw=;
+	do_data_backup=;
     fi
 
     # allow an environment variable to direct us to a remote host
@@ -485,7 +497,10 @@ emit_panel_display()
 {
     local f len power
 
-    clear_screen
+    if (( ! do_snap ))
+    then
+	clear_screen
+    fi
 
     # here we choose the specific values to put in the "panel" display
     for f in TIME V I Pcalc CE SOC TTG H9 T Tstart ARstring
@@ -493,7 +508,10 @@ emit_panel_display()
 	# use a shell trick to decide if display[$f] has a value
 	if [[ ${display[$f]+isset} ]]
 	then
-	    printf "%s\n" "${display[$f]}"
+	    if (( do_snap != 1 ))
+	    then
+		printf "%s\n" "${display[$f]}"
+	    fi
 
 	    # keep track of the longest description field, to size
 	    # the width of the output in the future
@@ -507,6 +525,16 @@ emit_panel_display()
 	fi
     done
     desc_wid=$(( $longest_desc + 2 ))
+    # this is so we do our snapshot the second time through,
+    # not the first, in order to make the formatting pretty
+    if (( do_snap ))
+    then
+	: $(( do_snap++ ))
+	if (( do_snap > 2 ))
+	then
+	    exit
+	fi
+    fi
 }
 
 emit_plot_data()
