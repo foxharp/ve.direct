@@ -70,6 +70,8 @@ get_options()
     do_remotehost=;  # ssh to remote host, connect to socket there
     do_testfile=;    # read data from given file instead of VE.Direct device
     ve_device=;      # connect to VE.Direct device
+    will_serve=true; # willing to create socket to share with others
+
     while [[ $# > 0 ]]
     do
 	arg="$1"
@@ -83,6 +85,7 @@ get_options()
 	--cel*|-C)	do_degF=; ;;
 	--raw)		do_raw=1 ;;
 	--backup)	do_data_backup=1 ;;
+	--standalone)   will_serve=; ;;
 	--logdir=*)
 	    logpath=${arg#--logdir=}
 	    if [[ ! $logpath ]]
@@ -321,13 +324,13 @@ init_device_connections()
 	sleep .5
 	exec 3< $do_testfile
 	input_fd=3
-	am_socket_writer=true;
+	am_server=$will_serve;
     elif [[ $ve_device ]]
     then
 	echo Taking input from device $ve_device...
 	exec 3<$ve_device
 	input_fd=3
-	am_socket_writer=true;
+	am_server=$will_serve;
 	# set correct baud, and let all characters through except
 	# carriage return (CR) characters
 	stty -F $ve_device raw igncr 19200
@@ -345,7 +348,7 @@ init_device_connections()
 	# while we *could* create another socket locally, it causes
 	# big problems if you type "--remote=localhost", since we'll
 	# be reading and writing the same socket.  hilarity ensues.
-	am_socket_writer=;
+	am_server=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     else
 	echo Taking input from another copy of $me running on local host...
@@ -361,12 +364,12 @@ init_device_connections()
 	coproc local_input { $data_client ; }
 	trap_kill+="$local_input_PID "
 	input_fd=${local_input[0]}
-	am_socket_writer=;
+	am_server=;
 	test "$force_plot" || do_plot=; # don't write plotfile unless forced
     fi
 
     # create the output socket
-    if [[ $am_socket_writer ]]
+    if [[ $am_server ]]
     then
 	# start the server.  we send data to its stdin, clients (other
 	# instances of this script) connect via UNIX domain socket to
@@ -621,7 +624,7 @@ to_clients()
 	field="$1"
 	value="$2"
 
-	if [[ $am_socket_writer ]]
+	if [[ $am_server ]]
 	then
 	    : socket_out is $socket_out
 	    printf "%s	%s\n" "$field" "$value" >&$socket_out || exit 1

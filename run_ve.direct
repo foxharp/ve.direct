@@ -23,8 +23,10 @@ then
     exit 1
 fi
 
+# if network client/server behavior isn't needed, add "--standalone"
 exec ./ve.direct \
 	--nopanel \
 	--logdir=./logs \
 	--device=/dev/serial/by-id/$ttyid
 
+exit
