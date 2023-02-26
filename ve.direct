@@ -264,12 +264,53 @@ init_descriptions()
 
 }
 
-# the script instance that talks to the VE.Direct device creates
-# a listening socket...
-ncat_server="ncat --send-only --idle-timeout 4 \
-    --keep-open --listen --unixsock /tmp/victron-socket"
-# ... in order to share the data with other instances:
-ncat_client="ncat --idle-timeout 4 --recv-only --unixsock /tmp/victron-socket"
+# the script instance that talks to the VE.Direct device becomes a
+# server by creating a listening socket, in order to share data with
+# other instances.  it does this using the command in "$data_server".
+#
+# other instances of the script on that machine become clients by
+# using the command in "$data_client".
+#
+# note that the $data_server and $data_client commands *always run on
+# the same machine*, which is the machine where the VE.Direct device
+# is connected.  Any "remoteness" is taken care of independently by
+# ssh.  So $data_server and $data_client should be chosen solely based
+# on what's available on the machine directly attached to the Victron
+# device.
+#
+# there are currently three choices for $data_server and $data_client: 
+# 1) the first, based on the GNU program "ncat", has the very nice
+# feature that multiple remote clients can connect at once, and they
+# all get copies of the data the server is sending.  2) the second is
+# based on "socat", and it can't provide that behavior.  if more than
+# one client connects, they each get some of the output.  but it's more
+# readily available than ncat, and most of the time there's only one
+# client connecting anyway.  3) the third choice uses the widely
+# available nc command.  4) the fourth choice also uses nc, but with
+# internet sockets, because many implementations of nc on embedded
+# systems (based on busybox) don't support UNIX domain sockets.  the
+# port can (and should) be firewalled -- it's never accessed from "off
+# device".
+#
+# again, remember that the $data_server and $data_client commands
+# always run on the same host.
+#
+
+# first choice:
+data_server="ncat --send-only -i 4 -k -l -U /tmp/victron-socket"
+data_client="ncat --recv-only -i 4 -U /tmp/victron-socket"
+
+# second choice:
+# data_server="socat -T4 -u STDIN UNIX-LISTEN:/tmp/victron-socket,fork"
+# data_client="socat -T4 -u UNIX-CONNECT:/tmp/victron-socket STDOUT"
+
+# third choice, untested:
+# data_server="nc -l -U /tmp/victron-socket"
+# data_client="nc -U /tmp/victron-socket"
+
+# fourth choice, untested:
+# data_server="nc -lk -p 6666"
+# data_client="nc localhost  6666"
 
 init_device_connections()
 {
@@ -298,7 +339,7 @@ init_device_connections()
 	#     echo '(because $VEDIRECT_HOST is set.)'
 	# fi
 
-	coproc ssh_input { ssh $do_remotehost "sh -c '$ncat_client' "; }
+	coproc ssh_input { ssh $do_remotehost "sh -c '$data_client' "; }
 	trap_kill+="$ssh_input_PID "
 	input_fd=${ssh_input[0]}
 	# while we *could* create another socket locally, it causes
@@ -317,7 +358,7 @@ init_device_connections()
 	    fi
 	    exit 1
 	fi
-	coproc local_input { $ncat_client ; }
+	coproc local_input { $data_client ; }
 	trap_kill+="$local_input_PID "
 	input_fd=${local_input[0]}
 	am_socket_writer=;
@@ -331,13 +372,13 @@ init_device_connections()
 	# instances of this script) connect via UNIX domain socket to
 	# fetch that data.
 	rm -f /tmp/victron-socket
-	coproc output { $ncat_server ; }
+	coproc output { $data_server ; }
 	trap_kill+="$output_PID "
 	socket_out=${output[1]}
 
 	# connect at least one client to the server, so that we won't
 	# hang if it blocks it's input when no one is listening.
-	$ncat_client >/dev/null 2>&1 &
+	$data_client >/dev/null 2>&1 &
 	trap_kill+="$! "
     fi
 }
@@ -747,9 +788,9 @@ loop()
 	    ) >&2
 
 	    # this error can happen if we've blocked trying to write
-	    # to the ncat server, probably because it has no clients,
+	    # to the server, probably because it has no clients,
 	    # and its buffers fill up.  we'll lose serial data while
-	    # blocked, and when ncat unblocks, we start reading the
+	    # blocked, and when the server unblocks, we start reading the
 	    # serial device again, perhaps in the middle of a line,
 	    # which causes errors.  we'll try reading a couple of
 	    # lines to resynchronize, but we won't try forever.
