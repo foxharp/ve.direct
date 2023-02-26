@@ -6,6 +6,8 @@ mydir=${0%/*} # dirname $0
 
 cd "$mydir" || exit 1
 
+mkdir -p ./logs
+
 # the ID of the serial device.  discover this string
 # with "ls /dev/serial/by-id".
 # hopefully there won't ever be two serial devices on
