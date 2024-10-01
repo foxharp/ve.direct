@@ -91,7 +91,7 @@ get_options()
 	    if [[ ! $logpath ]]
 	    then
 		echo "No pathname given with --logdir" >&2
-		usage
+		exit 1
 	    fi
 	    ;;
 	--remote=*)
@@ -99,7 +99,7 @@ get_options()
 	    if [[ ! $do_remotehost ]]
 	    then
 		echo "No hostname given with --remote" >&2
-		usage
+		exit 1
 	    fi
 	    ;;
 	--test=*)
@@ -107,7 +107,7 @@ get_options()
 	    if [[ ! $do_testfile || ! -r $do_testfile ]]
 	    then
 		echo "$me: --test: '$do_testfile' is unreadable" >&2
-		usage
+		exit 1
 	    fi
 	    ;;
 	--device=*)
@@ -115,7 +115,7 @@ get_options()
 	    if [[ ! $ve_device || ! -r $ve_device ]]
 	    then
 		echo "$me: --device: '$ve_device' is unreadable" >&2
-		usage
+		exit 1
 	    fi
 	    ;;
 	*) usage ;;
@@ -337,10 +337,10 @@ init_device_connections()
     elif [[ $do_remotehost ]]
     then
 	echo Taking input from $me running on remote host $do_remotehost...
-	# if [[ $using_VEDIRECT_HOST ]]
-	# then
-	#     echo '(because $VEDIRECT_HOST is set.)'
-	# fi
+	if [[ $using_VEDIRECT_HOST ]]
+	then
+	    echo "(because \$VEDIRECT_HOST is set to \"$do_remotehost\".)"
+	fi
 
 	coproc ssh_input { ssh $do_remotehost "sh -c '$data_client' "; }
 	trap_kill+="$ssh_input_PID "
