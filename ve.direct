@@ -212,6 +212,7 @@ init_descriptions()
     units[Alarm]="none";      descr[Alarm]="Alarm condition active"
     units[Relay]="none";      descr[Relay]="Relay state"
     units[AR]="alarm";        descr[AR]="Alarm reason"
+    units[OR]="none";         descr[OR]="Off reason"
     units[ARstring]="alarm";  descr[ARstring]="Alarm reason" # synthesized
     units[H1]="mAh";          descr[H1]="Depth of the deepest discharge"
     units[H2]="mAh";          descr[H2]="Depth of the last discharge"
@@ -246,6 +247,7 @@ init_descriptions()
     units[MODE]="none";       descr[MODE]="Device mode"
     units[AC_OUT_V]=".01V";   descr[AC_OUT_V]="AC output voltage"
     units[AC_OUT_I]=".1A";    descr[AC_OUT_I]="AC output current"
+    units[AC_OUT_S]="VA";     descr[AC_OUT_S]="AC output apparent power"
     units[WARN]="none";       descr[WARN]="Warning reason"
     units[TIME]="daytime";    descr[TIME]="Time" # synthesized
     units[Tstart]="minutes";  descr[Tstart]="Time since engine start" # synthesized
