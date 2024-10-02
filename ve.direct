@@ -31,7 +31,7 @@ me=${0##*/}
 usage()
 {
     exec >&2
-    cat <<-\EOF
+    cat <<-EOF
 usage: $me [options]
     options:
      --panel             Enable real-time display "panel" (default)
@@ -46,7 +46,7 @@ usage: $me [options]
      --backup            Copy input data to file, for reuse by "--test"
      --device=<device>   Attach to "device" for input from VE.Direct interface
      --remote=<host>     Get data from a copy of this script running on "host"
-                             (default, if $VEDIRECT_HOST is set in environment)
+                             (default, if \$VEDIRECT_HOST is set in environment)
      --logdir=<path>     Create all plot and log files in "path".
                              (defaults to current directory)
      --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
