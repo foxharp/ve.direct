@@ -6,7 +6,8 @@ mydir=${0%/*} # dirname $0
 
 cd "$mydir" || exit 1
 
-mkdir -p ./logs
+rm -fr /tmp/bmv-state
+mkdir -p ./logs /tmp/bmv-state
 
 # the ID of the serial device.  discover this string
 # with "ls /dev/serial/by-id".
@@ -26,6 +27,7 @@ fi
 # if network client/server behavior isn't needed, add "--standalone"
 exec ./ve.direct \
 	--nopanel \
+	--statedir=/tmp/bmv-state \
 	--logdir=./logs \
 	--device=/dev/serial/by-id/$ttyid
 
