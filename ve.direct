@@ -488,6 +488,24 @@ format_display_line()
     fi
 }
 
+save_state()
+{
+    field="$1"
+    value="$2"
+
+    if [[ "$do_state" ]]
+    then
+	if [[ $value !=  ${prev_state[$field]:-} ]]
+	then
+	    echo "$value" > "$statedir/$field.new"
+	    mv "$statedir/$field.new" "$statedir/$field" # atomic update
+	    prev_state[$field]="$value"
+	    # FIXME -- need a way of aging out old values?  or perhaps
+	    #  that should be left to an external client of the data
+	fi
+    fi
+}
+
 set_output()
 {
     local field value
@@ -501,16 +519,6 @@ set_output()
     if [[ "$do_raw" ]]
     then
 	printf "%s\n" "$(format_display_line "$@")"
-    fi
-    if [[ "$do_state" ]]
-    then
-	if [[ ${display[$field]:-} !=  ${prev_state[$field]:-} ]]
-	then
-	    echo "$value" > "$statedir/$field.new"
-	    mv "$statedir/$field.new" "$statedir/$field" # atomic update
-	    prev_state[$field]="$value"
-	    # FIXME -- need a way of aging out old values?
-	fi
     fi
     plot_data[$field]=$value
 }
@@ -882,6 +890,8 @@ loop()
 
 	    test "$do_testfile" && sleep .2
 	fi
+
+	save_state "$field" "$value"
 
 	unit=${units[$field]-unknown}
 	case $unit in
