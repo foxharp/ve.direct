@@ -49,6 +49,7 @@ usage: $me [options]
                              (default, if \$VEDIRECT_HOST is set in environment)
      --logdir=<path>     Create all plot and log files in "path".
                              (defaults to current directory)
+     --statedir=<path>   Enable saving all current values in given directory.
      --test=<testfile>   Fetch input from "testfile" instead of VE.Direct
      --raw               Format and show data directly as it arrives
                             (mostly for debug)
@@ -63,6 +64,7 @@ get_options()
     do_snap=;	     # do panel snapshot
     force_plot=;     # force, even if remote
     do_panel=1;	     # show real-time panel display of most useful data
+    do_state=;	     # save up-to-date copies of values, for use by others
     do_degF=1;	     # convert temperature to fahrenheit
     do_raw=;	     # display all data in "pretty" format, as it arrives
     do_data_backup=; # create reusable (with "--test") copy of all input data
@@ -86,6 +88,20 @@ get_options()
 	--raw)		do_raw=1 ;;
 	--backup)	do_data_backup=1 ;;
 	--standalone)   will_serve=; ;;
+	--statedir=*)
+	    do_state=1
+	    statedir=${arg#--statedir=}
+	    if [[ ! $statedir ]]
+	    then
+		echo "No pathname given with --statedir" >&2
+		exit 1
+	    fi
+	    if [[ ! -d $statedir ]]
+	    then
+		echo "Directory $statedir doesn't exist" >&2
+		exit 1
+	    fi
+	    ;;
 	--logdir=*)
 	    logpath=${arg#--logdir=}
 	    if [[ ! $logpath ]]
@@ -139,6 +155,7 @@ get_options()
     if [[ $do_snap ]]
     then
 	do_panel=1
+	do_state=;
 	do_plot=;
 	do_raw=;
 	do_data_backup=;
@@ -477,8 +494,24 @@ set_output()
     field="$1"
     value="$2"
 
-    [[ "$do_panel" ]] && display[$field]=$(format_display_line "$@")
-    [[ "$do_raw" ]]   && printf "%s\n" "$(format_display_line "$@")"
+    if [[ "$do_panel" ]]
+    then
+	display[$field]=$(format_display_line "$@")
+    fi
+    if [[ "$do_raw" ]]
+    then
+	printf "%s\n" "$(format_display_line "$@")"
+    fi
+    if [[ "$do_state" ]]
+    then
+	if [[ ${display[$field]:-} !=  ${prev_state[$field]:-} ]]
+	then
+	    echo "$value" > "$statedir/$field.new"
+	    mv "$statedir/$field.new" "$statedir/$field" # atomic update
+	    prev_state[$field]="$value"
+	    # FIXME -- need a way of aging out old values?
+	fi
+    fi
     plot_data[$field]=$value
 }
 
@@ -899,7 +932,7 @@ loop()
 }
 
 # declare associative arrays at global scope
-declare -A units descr alarm display plot_data
+declare -A units descr alarm display plot_data prev_state
 
 exit_trapfunc()
 {
